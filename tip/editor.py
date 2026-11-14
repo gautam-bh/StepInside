@@ -8,7 +8,7 @@ Controls (also shown in the window):
     f                 add a foreground object: click around its outline,
                       Enter to finish
     Backspace         undo: last outline point / last foreground / last box
-    a                 re-run automatic detection (VP + back wall)
+    a                 re-run automatic detection (VP, back wall, deeper boxes)
     s                 save                      q   save and quit
 
 The editing logic lives in AnnotationEditor and takes plain (x, y) events,
@@ -40,7 +40,7 @@ class AnnotationEditor:
         self.width, self.height = image_size
         self.ann = ann
         self.out_path = out_path
-        self.auto_fn = auto_fn  # () -> (vp, back_wall)
+        self.auto_fn = auto_fn  # () -> (vp, back_wall[, segments])
         self.state = EditorState(
             vanishing_point=list(ann.vanishing_point),
             back_wall=list(ann.back_wall),
@@ -145,9 +145,14 @@ class AnnotationEditor:
         elif k == "backspace":
             self.undo()
         elif k == "a" and self.auto_fn is not None:
-            vp, bw = self.auto_fn()
+            res = self.auto_fn()
+            vp, bw = res[0], res[1]
             self.state.vanishing_point, self.state.back_wall = list(vp), list(bw)
-            self.message = "auto-detected VP and back wall"
+            if len(res) > 2:
+                self.state.segments = [list(r) for r in res[2]]
+                self.message = f"auto-detected VP, back wall and {len(res[2])} deeper boxes"
+            else:
+                self.message = "auto-detected VP and back wall"
         elif k == "s":
             self.save()
         self.on_change()

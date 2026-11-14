@@ -12,7 +12,8 @@
 
 Editor controls: drag the red VP / magenta corners · b add a box behind the
 current last one (click 2 corners) · f outline a foreground object (Enter to
-finish) · Backspace undo · a re-run detection · s save · q save and quit.
+finish) · Backspace undo · a re-run detection (VP, back wall and deeper
+boxes) · s save · q save and quit.
 """
 
 import argparse
@@ -53,12 +54,15 @@ def main():
         print("auto-detecting vanishing point and back wall ...")
         r = auto_annotate_array(image)
         print(f"  vanishing point {r.vanishing_point}, back wall {r.back_wall}")
+        for i, seg in enumerate(r.segments or [], start=1):
+            print(f"  deeper box {i}: {seg}")
         ann = Annotation(
             image=rel(src),
             vanishing_point=r.vanishing_point,
             back_wall=tuple(r.back_wall),
             focal_35mm=a.focal_35mm,
             camera_height=a.camera_height,
+            segments=r.segments or [],
         )
         out = Path(a.out or ROOT / "data" / "annotations" / (src.stem + ".json"))
 
@@ -79,7 +83,7 @@ def main():
 
     def auto():
         r = auto_annotate_array(image)
-        return r.vanishing_point, r.back_wall
+        return r.vanishing_point, r.back_wall, r.segments or []
 
     h, w = image.shape[:2]
     editor = AnnotationEditor(ann, (w, h), out_path=out, auto_fn=auto)

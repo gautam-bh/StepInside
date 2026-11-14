@@ -4,9 +4,9 @@ CS180 final project: turn a single interior photograph into a scene you can step
 
 The starting point is **Tour Into the Picture** (TIP; Horry, Anjyo & Arai, SIGGRAPH 1997). The room is a textured box (back wall, floor, ceiling, left and right walls), and foreground objects are flat cutouts standing at their estimated depth. When the camera moves, it reveals regions the photo never saw. The project's research question is how to fill those: later we will add diffusion inpainting on the rectified wall and floor textures and compare it against inpainting the original photo directly.
 
-**Status:** TIP baseline working on the hallway scene: a chain of 7 boxes runs from the camera through the doorway to the corridor's end wall. Holes are shown, and a simple push-pull fill is available. Automatic annotation (vanishing point + back wall) and an interactive editor are in place. Diffusion completion is not started.
+**Status:** TIP baseline working on the hallway scene: a chain of 7 boxes runs from the camera through the doorway to the corridor's end wall. Holes are shown, and a simple push-pull fill is available. Automatic annotation detects the vanishing point, the back wall and the deeper boxes down the corridor, and an interactive editor lets you adjust the result. Diffusion completion is not started.
 
-| Hand annotation (7 boxes) | Automatic annotation | Novel views (top: holes in magenta, bottom: push-pull fill) |
+| Hand annotation (7 boxes) | Automatic annotation (5 boxes) | Novel views (top: holes in magenta, bottom: push-pull fill) |
 |---|---|---|
 | <img src="outputs/hallway/annotation.jpg" width="200"> | <img src="outputs/hallway/auto_annotation.jpg" width="200"> | <img src="outputs/hallway/contact_sheet.jpg" width="560"> |
 
@@ -34,7 +34,7 @@ python scripts/face_textures.py data/annotations/hallway.json   # rectified, unf
 
 # Tests
 python tests/test_tip.py                 # geometry + rendering
-python tests/test_annotation_tools.py    # auto-annotation + editor
+python tests/test_annotation_tools.py    # auto-annotation (VP, back wall, deeper boxes) + editor, ~1 min
 ```
 
 **Viewer controls:** drag to move sideways and up/down · scroll or `W`/`S` to walk forward and back (go through the doorway and down the corridor) · `A`/`D` strafe · `Q`/`E` up/down · hold `Shift` to run · `Shift`+drag to look around · `F` toggles the simple fill · `G` toggles the foreground · `H` shows box edges · `Space` wiggles · `R` resets. Holes (no photo data) show in magenta.
@@ -47,7 +47,7 @@ python scripts/show_annotation.py data/annotations/my_room.json -o outputs/my_ro
 python scripts/build_scene.py data/annotations/my_room.json
 ```
 
-`annotate.py` first **detects the vanishing point and back wall automatically** ([`tip/auto_annotate.py`](tip/auto_annotate.py)), then opens an editor seeded with the result:
+`annotate.py` first **detects the vanishing point, back wall and deeper boxes automatically** ([`tip/auto_annotate.py`](tip/auto_annotate.py)), then opens an editor seeded with the result:
 
 | key / mouse | action |
 |---|---|
@@ -55,7 +55,7 @@ python scripts/build_scene.py data/annotations/my_room.json
 | `b` | add a box behind the last one: click its top-left, then bottom-right corner |
 | `f` | outline a foreground object, `Enter` to finish |
 | `Backspace` | undo (outline point → foreground object → box) |
-| `a` | re-run automatic detection |
+| `a` | re-run automatic detection (replaces VP, back wall and boxes) |
 | `s` / `q` | save / save and quit (refuses invalid annotations and says why) |
 
 `--auto-only` skips the window and just saves the detection. Passing an existing `.json` reopens it for editing.
@@ -64,8 +64,9 @@ python scripts/build_scene.py data/annotations/my_room.json
 1. **Vanishing point:** edge pixels vote. Each strong edge pixel defines a line along its edge direction, and the VP is the point most of those lines pass through (coarse grid, then refined). Near horizontal and vertical edges are ignored, since they don't converge in one-point perspective.
 2. **Back wall:** an exhaustive search over rectangles around the VP. A rectangle's four corners fix the four room-edge rays (floor/wall and ceiling/wall junctions). Each rectangle is scored by how consistently the image changes across those rays, from each corner out to the border, plus edge strength along its own sides. Running sums keep the 4D search fast.
 3. **VP refinement:** the VP is searched jointly with the rectangle. Then the four room-edge lines are fitted through the corners, and the VP becomes their least-squares intersection.
+4. **Deeper boxes:** walk down the room in depth steps of about 1.5×. Each next box must contain the VP, sit inside the previous one, and keep a similar 3D size: at most 30% smaller or 10% bigger, with similar proportions. That rules out door panels and posters. It's scored like the back wall, except each floor/ceiling/wall edge is checked only over the exact stretch where that box's edges would run: from its far corner out to where it meets the previous box (a factor of Z_k/Z_{k-1} farther from the VP). Detection stops when the evidence gets weak or the boxes get too small.
 
-On synthetic rooms with known geometry, the VP is within about 5 px and the back wall within 4 px. On the hallway, the back wall is within 12 px of the hand annotation. The VP comes out at y ≈ 602 vs. 628 by hand: in this photo the ceiling lines meet near y ≈ 610 and the floor lines near y ≈ 660 (lens distortion), so neither value is exact. Extra boxes and foreground objects are still added by hand in the editor.
+On synthetic rooms with known geometry, the VP is within about 5 px and the back wall within 4 px. On a synthetic two-step corridor, the deeper boxes are within 8 px (their bottom edges, where a box ends along a continuous floor, within 15 px). On the hallway, the back wall is within 12 px of the hand annotation. Detection finds 4 boxes down the corridor, and the first, behind the doorway, is within 15 px of the hand-drawn one. The VP comes out at y ≈ 602 vs. 628 by hand: in this photo the ceiling lines meet near y ≈ 610 and the floor lines near y ≈ 660 (lens distortion), so neither value is exact. Foreground objects are still outlined by hand in the editor.
 
 You can also write the annotation JSON by hand (see [`data/annotations/hallway.json`](data/annotations/hallway.json)):
 

@@ -19,27 +19,34 @@ sys.path.insert(0, str(ROOT))
 
 from tip import build_scene, load_annotation  # noqa: E402
 from tip.annotations import Annotation  # noqa: E402
-from tip.auto_annotate import auto_annotate_array, find_vanishing_point, to_gray  # noqa: E402
+from tip.auto_annotate import (  # noqa: E402
+    auto_annotate_array,
+    downscale,
+    find_deeper_boxes,
+    find_vanishing_point,
+    gradients,
+    to_gray,
+)
 from tip.editor import AnnotationEditor  # noqa: E402
 from tip.render import render_view  # noqa: E402
 from tip.textures import load_image  # noqa: E402
 
 
 # --------------------------------------------------------------------------- synthetic rooms
-def synthetic_room(vp, back_wall, size=(600, 800), seed=0):
+def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=()):
     """Render a box room with plain-coloured, slightly noisy surfaces and a
     tiled floor, with known VP and back wall.
 
     Noise is kept fine and faint: coarse texture noise gets magnified near
     the camera into blocky bilinear patterns that real photos don't have."""
     w, h = size
-    ann = Annotation(image="synthetic", vanishing_point=vp, back_wall=back_wall)
+    ann = Annotation(image="synthetic", vanishing_point=vp, back_wall=back_wall, segments=[list(r) for r in segments])
     scene = build_scene(ann, w, h)
     rng = np.random.default_rng(seed)
     shade = {"floor": 0.55, "ceiling": 0.22, "left": 0.85, "right": 0.75, "back": 0.66}
     tex = {}
     for p in scene.planes:
-        kind = p.name.split("_", 1)[1]
+        kind = p.name.split("_")[1]  # s<k>_<kind>[_band]
         base = shade[kind]
         n = 1024
         t = np.full((n, n, 3), base, np.float32)
@@ -47,6 +54,8 @@ def synthetic_room(vp, back_wall, size=(600, 800), seed=0):
         if kind == "floor":  # tile grout lines
             t[::128, :, :] -= 0.12
             t[:, ::128, :] -= 0.12
+            if segments:  # darker threshold strip where the floor meets the next box
+                t[: n // 40] -= 0.2
         tex[p.name] = np.concatenate([np.clip(t, 0, 1), np.ones((n, n, 1), np.float32)], axis=-1)
     # Supersample 3x and box-downsample: anti-aliased edges like a real
     # camera's (a one-ray-per-pixel render has staircase edges whose gradient
@@ -81,6 +90,53 @@ def test_back_wall_on_synthetic_rooms():
         bw_err = np.abs(np.array(r.back_wall) - np.array(bw)).max()
         assert vp_err < 6.0, f"VP {r.vanishing_point} vs {vp}"
         assert bw_err < 10.0, f"back wall {r.back_wall} vs {bw} (max err {bw_err:.1f}px)"
+
+
+# A corridor that narrows by 25% at each of two door-like steps, with box
+# ends about 1.5x deeper each time (bottom edges 140, 93 and 62 px below the
+# VP) and a darker threshold strip on the floor at each boundary.
+CORRIDOR = dict(
+    vp=(300.0, 420.0),
+    back_wall=(190.0, 290.0, 410.0, 560.0),
+    segments=[(245.2, 355.2, 354.8, 513.0), (272.6, 387.6, 327.4, 482.0)],
+)
+
+
+def test_deeper_boxes_on_synthetic_corridor():
+    """The deeper-box stage on its own: given the true VP and back wall, it
+    should find the two nested boxes. (Back-wall detection has its own tests.
+    Here the doorway reaches the floor, so the outer wall's bottom edge is
+    nearly invisible and full detection reasonably takes the inner frame as
+    the back wall.)"""
+    img = synthetic_room(CORRIDOR["vp"], CORRIDOR["back_wall"], segments=CORRIDOR["segments"])
+    small, s = downscale(img, 640)  # same working resolution as the pipeline
+    gx, gy = gradients(to_gray(small), sigma=1.0)
+    to_small = lambda v: (np.asarray(v, float) + 0.5) * s - 0.5  # noqa: E731
+    to_full = lambda v: (np.asarray(v, float) + 0.5) / s - 0.5  # noqa: E731
+    boxes, _ = find_deeper_boxes(gx, gy, tuple(to_small(CORRIDOR["vp"])), list(to_small(CORRIDOR["back_wall"])))
+    assert len(boxes) >= 2, f"found {len(boxes)} deeper boxes: {boxes}"
+    for found, truth in zip(boxes, CORRIDOR["segments"]):
+        err = np.abs(to_full(found) - np.array(truth))
+        # Sides and top are set by visible door-frame edges. The bottom, where
+        # the box ends along a continuous floor, is the least constrained.
+        assert err[:3].max() < 8.0, f"deeper box {to_full(found)} vs truth {truth}"
+        assert err[3] < 15.0, f"deeper box bottom {to_full(found)[3]:.1f} vs truth {truth[3]}"
+
+
+def test_hallway_deeper_boxes():
+    ann = load_annotation(ROOT / "data" / "annotations" / "hallway.json")
+    image = load_image(ann.image)
+    r = auto_annotate_array(image)
+    assert len(r.segments) >= 3, f"only {len(r.segments)} deeper boxes"
+    # The first box behind the doorway matches the hand-drawn corridor box.
+    err = np.abs(np.array(r.segments[0]) - np.array(ann.segments[1])).max()
+    assert err < 25, f"first deeper box {r.segments[0]} vs hand {ann.segments[1]}"
+    # The whole chain builds a valid scene, getting deeper box by box.
+    auto = Annotation(image=ann.image, vanishing_point=r.vanishing_point, back_wall=tuple(r.back_wall),
+                      segments=r.segments)
+    scene = build_scene(auto, image.shape[1], image.shape[0])
+    depths = [b.z1 for b in scene.boxes]
+    assert depths == sorted(depths) and depths[-1] > 3 * depths[0]
 
 
 def test_auto_annotation_builds_a_valid_scene():
@@ -201,6 +257,16 @@ def test_save_roundtrip_builds_scene():
         scene = build_scene(ann, 600, 800)
         assert len(scene.boxes) == 2
         assert any(p.kind == "foreground" for p in scene.planes)
+
+
+def test_auto_key_replaces_vp_back_wall_and_boxes():
+    ed = _editor()
+    ed.auto_fn = lambda: ((310, 410), [180, 280, 430, 570], [[240, 340, 380, 520]])
+    ed.key("a")
+    assert ed.state.vanishing_point == [310, 410]
+    assert ed.state.back_wall == [180, 280, 430, 570]
+    assert ed.state.segments == [[240, 340, 380, 520]]
+    assert "1 deeper boxes" in ed.message
 
 
 def test_invalid_annotation_is_not_saved():

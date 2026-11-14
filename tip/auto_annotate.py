@@ -14,6 +14,13 @@ Works for one-point-perspective interiors (camera looking down the room).
    how consistently the image changes across each of the four rays (from
    its corner outward), plus edge strength along the rectangle's own sides.
    Running sums make the exhaustive 4D search cheap.
+3. Deeper boxes (find_deeper_boxes). Walk down the room in depth steps of
+   about 1.5x. Each next box must contain the VP, sit inside the previous one
+   and keep a similar 3D size. Its rectangle is scored like the back wall,
+   except the junction edges are checked only over the exact stretch where
+   that box's floor/ceiling/wall edges would run, from its far corner out to
+   where it meets the previous box. It stops when the evidence gets weak or
+   the boxes get too small.
 
 The result is a starting point. scripts/annotate.py opens it for adjustment.
 """
@@ -152,17 +159,19 @@ def find_vanishing_point(gray: np.ndarray, seed: int = 0) -> tuple[float, float]
 
 
 # --------------------------------------------------------------------------- back wall
-def _ray_length(vp, dx, dy, w, h):
-    """Distance from vp along unit direction (dx, dy) to the image border."""
+def _ray_length(vp, dx, dy, w, h, bound=None):
+    """Distance from vp along unit direction (dx, dy) to the image border, or
+    to the edge of `bound` = (x1, y1, x2, y2) if given."""
+    bx1, by1, bx2, by2 = bound if bound is not None else (0, 0, w - 1, h - 1)
     with np.errstate(divide="ignore", invalid="ignore"):
-        tx = np.where(dx > 1e-9, (w - 1 - vp[0]) / dx, np.where(dx < -1e-9, -vp[0] / dx, np.inf))
-        ty = np.where(dy > 1e-9, (h - 1 - vp[1]) / dy, np.where(dy < -1e-9, -vp[1] / dy, np.inf))
+        tx = np.where(dx > 1e-9, (bx2 - vp[0]) / dx, np.where(dx < -1e-9, (bx1 - vp[0]) / dx, np.inf))
+        ty = np.where(dy > 1e-9, (by2 - vp[1]) / dy, np.where(dy < -1e-9, (by1 - vp[1]) / dy, np.inf))
     return np.minimum(tx, ty)
 
 
-def ray_support(gx, gy, vp, cx, cy, n: int = 48, slack: int = 2) -> np.ndarray:
+def ray_support(gx, gy, vp, cx, cy, n: int = 48, slack: int = 2, bound=None) -> np.ndarray:
     """Score room-edge rays that start at corners (cx, cy) and run away from
-    the VP to the image border.
+    the VP to the image border (or to the edge of `bound`).
 
     The score is the median edge strength across the ray along that outer
     segment, times sqrt(segment length / full ray length). A real room edge
@@ -178,7 +187,7 @@ def ray_support(gx, gy, vp, cx, cy, n: int = 48, slack: int = 2) -> np.ndarray:
     ddx, ddy = cx - vp[0], cy - vp[1]
     d0 = np.hypot(ddx, ddy) + 1e-6
     ux, uy = ddx / d0, ddy / d0
-    L = _ray_length(vp, ux, uy, w, h)
+    L = _ray_length(vp, ux, uy, w, h, bound)
     frac = np.clip((L - d0) / L, 0, 1)
     t = d0[:, None] + np.linspace(0, 1, n)[None, :] * np.maximum(L - d0, 0)[:, None]
     x, y = vp[0] + t * ux[:, None], vp[1] + t * uy[:, None]
@@ -201,46 +210,50 @@ def _band_max(a: np.ndarray, axis: int, r: int = 1) -> np.ndarray:
     return out
 
 
-def find_back_wall(gx, gy, vp, step: int = 4, min_frac: float = 0.06):
-    """Exhaustive search for the back-wall rectangle [x1, y1, x2, y2].
+def _edge_terms(gx, gy, X1, X2, Y1, Y2):
+    """Mean edge strength along candidate rectangle sides, via running sums.
 
-    score = support of the four room-edge rays leaving its corners
-          + mean horizontal-edge strength along its top and bottom edges
-          + 0.5 * mean vertical-edge strength along its sides.
-    """
+    Returns E_b (x1, x2, y2) and E_t (x1, x2, y1), the mean |d/dy| along the
+    bottom and top edges, and V_l (x1, y1, y2) and V_r (x2, y1, y2), the mean
+    |d/dx| along the sides."""
     h, w = gx.shape
-    vx, vy = vp
-    m = int(min_frac * min(h, w))
-    X1 = np.arange(2, int(vx) - m, step)
-    X2 = np.arange(int(vx) + m, w - 2, step)
-    Y1 = np.arange(2, int(vy) - m, step)
-    Y2 = np.arange(int(vy) + m, h - 2, step)
-    if min(len(X1), len(X2), len(Y1), len(Y2)) == 0:
-        raise ValueError("vanishing point too close to the image border for a back wall")
-
-    # Ray terms on 2D grids of corners.
-    R_bl = ray_support(gx, gy, vp, X1[:, None], Y2[None, :])  # (x1, y2)
-    R_br = ray_support(gx, gy, vp, X2[:, None], Y2[None, :])  # (x2, y2)
-    R_tl = ray_support(gx, gy, vp, X1[:, None], Y1[None, :])  # (x1, y1)
-    R_tr = ray_support(gx, gy, vp, X2[:, None], Y1[None, :])  # (x2, y1)
-
-    # Edge terms by running sums along rows (horizontal edges) and columns.
     agy = _band_max(np.abs(gy), axis=0)
     agx = _band_max(np.abs(gx), axis=1)
     Ch = np.concatenate([np.zeros((h, 1)), np.cumsum(agy, axis=1)], axis=1)  # along x
     Cv = np.concatenate([np.zeros((1, w)), np.cumsum(agx, axis=0)], axis=0)  # along y
 
-    def h_edge(Y):  # (x1, x2, y) mean |gy| on row y between x1 and x2
+    def h_edge(Y):
         return (Ch[Y[None, None, :], X2[None, :, None]] - Ch[Y[None, None, :], X1[:, None, None]]) / (
             X2[None, :, None] - X1[:, None, None])
 
-    E_b = h_edge(Y2)  # (x1, x2, y2)
-    E_t = h_edge(Y1)  # (x1, x2, y1)
-    # Vertical sides: mean |gx| on column x between y1 and y2 -> (x, y1, y2)
-    V_l = (Cv[Y2[None, None, :], X1[:, None, None]] - Cv[Y1[None, :, None], X1[:, None, None]]) / (
-        Y2[None, None, :] - Y1[None, :, None])
-    V_r = (Cv[Y2[None, None, :], X2[:, None, None]] - Cv[Y1[None, :, None], X2[:, None, None]]) / (
-        Y2[None, None, :] - Y1[None, :, None])
+    def v_edge(X):
+        return (Cv[Y2[None, None, :], X[:, None, None]] - Cv[Y1[None, :, None], X[:, None, None]]) / (
+            Y2[None, None, :] - Y1[None, :, None])
+
+    return h_edge(Y2), h_edge(Y1), v_edge(X1), v_edge(X2)
+
+
+def _search_rect(gx, gy, vp, X1, X2, Y1, Y2, bound=None, valid=None):
+    """Exhaustive search over rectangles with x1 in X1, x2 in X2, y1 in Y1 and
+    y2 in Y2:
+
+        score = support of the four room-edge rays leaving its corners
+              + mean horizontal-edge strength along its top and bottom edges
+              + 0.5 * mean vertical-edge strength along its sides.
+
+    valid(x1, x2, y1, y2) -> bool array (broadcast 4D) can exclude candidates.
+    Returns (rect, score), or (None, -inf) if nothing is allowed.
+    """
+    h, w = gx.shape
+    if min(len(X1), len(X2), len(Y1), len(Y2)) == 0:
+        return None, -np.inf
+    # Ray terms on 2D grids of corners.
+    R_bl = ray_support(gx, gy, vp, X1[:, None], Y2[None, :], bound=bound)  # (x1, y2)
+    R_br = ray_support(gx, gy, vp, X2[:, None], Y2[None, :], bound=bound)  # (x2, y2)
+    R_tl = ray_support(gx, gy, vp, X1[:, None], Y1[None, :], bound=bound)  # (x1, y1)
+    R_tr = ray_support(gx, gy, vp, X2[:, None], Y1[None, :], bound=bound)  # (x2, y1)
+
+    E_b, E_t, V_l, V_r = _edge_terms(gx, gy, X1, X2, Y1, Y2)
 
     # Total score over (x1, x2, y1, y2).
     S = (
@@ -248,9 +261,167 @@ def find_back_wall(gx, gy, vp, step: int = 4, min_frac: float = 0.06):
         + E_b[:, :, None, :] + E_t[:, :, :, None]
         + 0.5 * (V_l[:, None, :, :] + V_r[None, :, :, :])
     )
+    if valid is not None:
+        ok = valid(X1[:, None, None, None], X2[None, :, None, None], Y1[None, None, :, None], Y2[None, None, None, :])
+        S = np.where(ok, S, -np.inf)
     k = int(np.argmax(S))
+    if not np.isfinite(S.ravel()[k]):
+        return None, -np.inf
     i1, i2, j1, j2 = np.unravel_index(k, S.shape)
     return [float(X1[i1]), float(Y1[j1]), float(X2[i2]), float(Y2[j2])], float(S.ravel()[k])
+
+
+def find_back_wall(gx, gy, vp, step: int = 4, min_frac: float = 0.06):
+    """Best back-wall rectangle [x1, y1, x2, y2] anywhere in the image, and its score."""
+    h, w = gx.shape
+    vx, vy = vp
+    m = int(min_frac * min(h, w))
+    X1 = np.arange(2, int(vx) - m, step)
+    X2 = np.arange(int(vx) + m, w - 2, step)
+    Y1 = np.arange(2, int(vy) - m, step)
+    Y2 = np.arange(int(vy) + m, h - 2, step)
+    rect, score = _search_rect(gx, gy, vp, X1, X2, Y1, Y2)
+    if rect is None:
+        raise ValueError("vanishing point too close to the image border for a back wall")
+    return rect, score
+
+
+# --------------------------------------------------------------------------- deeper boxes
+def _box_shape(rect, vp):
+    """3D width and height of a box ending at `rect`, up to the common scale
+    f / camera_height: a rectangle whose bottom is d px below the VP sits at
+    depth proportional to 1/d, so its size is (pixels / d)."""
+    x1, y1, x2, y2 = rect
+    d = y2 - vp[1]
+    return (x2 - x1) / d, (y2 - y1) / d
+
+
+def segment_support(gx, gy, vp, cx, cy, ratio, n: int = 24, slack: int = 2, full_len: float = 25.0,
+                    pct: float = 65.0):
+    """Edge support along a room-edge segment that starts at corner (cx, cy)
+    and runs away from the VP until it is `ratio` times as far from the VP.
+
+    A box ending at depth Z_k starts at the previous box's depth Z_{k-1}, so
+    its floor/wall and ceiling/wall junctions run from its far corner outward
+    by exactly ratio = Z_k / Z_{k-1}. Score = the `pct`-th percentile of edge
+    strength across the segment, scaled down for segments shorter than
+    `full_len` px (too short to be reliable). With pct = 65, the edge must
+    run along about 35% of the segment. Deeper boxes' junctions are often
+    partly hidden behind the previous box's back wall, so requiring the
+    whole length (the median or more) would be too strict. Arrays broadcast
+    together."""
+    h, w = gx.shape
+    cx, cy, ratio = np.broadcast_arrays(np.asarray(cx, np.float32), np.asarray(cy, np.float32),
+                                        np.asarray(ratio, np.float32))
+    shape = cx.shape
+    cx, cy, ratio = cx.ravel(), cy.ravel(), ratio.ravel()
+    ddx, ddy = cx - vp[0], cy - vp[1]
+    d0 = np.hypot(ddx, ddy) + 1e-6
+    ux, uy = ddx / d0, ddy / d0
+    d1 = np.minimum(d0 * ratio, _ray_length(vp, ux, uy, w, h))
+    seg = np.maximum(d1 - d0, 0)
+    t = d0[:, None] + np.linspace(0, 1, n)[None, :] * seg[:, None]
+    x, y = vp[0] + t * ux[:, None], vp[1] + t * uy[:, None]
+    nx, ny = -uy[:, None], ux[:, None]
+    g = np.zeros_like(x)
+    for o in range(-slack, slack + 1):
+        xo, yo = x + o * nx, y + o * ny
+        g = np.maximum(g, np.abs(_sample(gx, xo, yo) * nx + _sample(gy, xo, yo) * ny))
+    return (np.percentile(g, pct, axis=1) * np.sqrt(np.clip(seg / full_len, 0, 1))).reshape(shape)
+
+
+def find_inner_box(gx, gy, vp, prev, step: int = 2, min_px: int = 6, min_gap: int = 2,
+                   shape_range=(0.7, 1.1), y2_window=None):
+    """Best rectangle for the next box behind `prev` (all coords in the
+    detector's image). It must contain the VP, lie inside `prev`, have its
+    bottom edge closer to the VP than prev's (farther away), and keep a 3D
+    width, height and aspect ratio within `shape_range` of prev's (default:
+    at most 30% smaller, at most 10% bigger, since rooms seen through a
+    doorway are rarely bigger than the room in front). That rules out door
+    panels, posters and other rectangles that would mean a corridor suddenly
+    shrinking or ballooning. y2_window = (lo, hi) restricts the bottom edge.
+
+    score = support of the four junction segments the box would have (see
+            segment_support) + edges along the rectangle (as for the back wall)."""
+    vx, vy = vp
+    px1, py1, px2, py2 = prev
+    X1 = np.arange(np.ceil(px1) + 1, int(vx) - min_px + 1, step).astype(int)
+    X2 = np.arange(int(vx) + min_px, np.floor(px2), step).astype(int)
+    Y1 = np.arange(np.ceil(py1) + 1, int(vy) - min_px + 1, step).astype(int)
+    Y2 = np.arange(int(vy) + min_px, np.floor(py2) - min_gap + 1, step).astype(int)
+    if y2_window is not None:
+        Y2 = Y2[(Y2 >= y2_window[0]) & (Y2 <= y2_window[1])]
+    if min(len(X1), len(X2), len(Y1), len(Y2)) == 0:
+        return None, -np.inf
+    ratio = (py2 - vy) / (Y2 - vy)  # Z_k / Z_{k-1}, depends on y2 only
+
+    # Junction segments. Bottom corners: (x, y2). Top corners: (x, y1, y2), since
+    # their length depends on the box's depth, which comes from y2.
+    R_bl = segment_support(gx, gy, vp, X1[:, None], Y2[None, :], ratio[None, :])  # (x1, y2)
+    R_br = segment_support(gx, gy, vp, X2[:, None], Y2[None, :], ratio[None, :])  # (x2, y2)
+    R_tl = segment_support(gx, gy, vp, X1[:, None, None], Y1[None, :, None], ratio[None, None, :])  # (x1, y1, y2)
+    R_tr = segment_support(gx, gy, vp, X2[:, None, None], Y1[None, :, None], ratio[None, None, :])  # (x2, y1, y2)
+    E_b, E_t, V_l, V_r = _edge_terms(gx, gy, X1, X2, Y1, Y2)
+
+    S = (
+        R_bl[:, None, None, :] + R_br[None, :, None, :] + R_tl[:, None, :, :] + R_tr[None, :, :, :]
+        + E_b[:, :, None, :] + E_t[:, :, :, None]
+        + 0.5 * (V_l[:, None, :, :] + V_r[None, :, :, :])
+    )
+    pw, ph = _box_shape(prev, vp)
+    lo, hi = shape_range
+    x1, x2 = X1[:, None, None, None], X2[None, :, None, None]
+    y1, y2 = Y1[None, None, :, None], Y2[None, None, None, :]
+    d = y2 - vy
+    w3, h3 = (x2 - x1) / d, (y2 - y1) / d
+    ok = (w3 > lo * pw) & (w3 < hi * pw) & (h3 > lo * ph) & (h3 < hi * ph)
+    # Similar proportions too: corridors don't go from wide to tall.
+    asp, pasp = h3 / w3, ph / pw
+    ok &= (asp > 0.75 * pasp) & (asp < 1.33 * pasp)
+    S = np.where(ok, S, -np.inf)
+    k = int(np.argmax(S))
+    if not np.isfinite(S.ravel()[k]):
+        return None, -np.inf
+    i1, i2, j1, j2 = np.unravel_index(k, S.shape)
+    return [float(X1[i1]), float(Y1[j1]), float(X2[i2]), float(Y2[j2])], float(S.ravel()[k])
+
+
+def find_deeper_boxes(gx, gy, vp, back_wall, max_boxes: int = 8, depth_step: float = 1.5,
+                      stop_frac: float = 0.3, min_px: int = 6):
+    """Chain of further boxes behind the back wall, nearest first.
+
+    Walks down the room in geometric depth steps: each box ends about
+    `depth_step` times deeper than the previous one. In image terms, its
+    bottom edge is about 1/depth_step as far below the VP. Within +-25% of that
+    depth the boundary snaps to the best-supported rectangle, whose
+    cross-section is fitted to the local floor/ceiling/wall junctions (see
+    find_inner_box). It stops when boxes get too small to fit around the VP,
+    when the evidence gets weak (score < stop_frac x the back wall's), or
+    after max_boxes boxes."""
+    vx, vy = vp
+    ref = _rect_score(gx, gy, vp, back_wall, bound=None)
+    boxes, scores = [], []
+    prev = back_wall
+    for _ in range(max_boxes):
+        d_prev = prev[3] - vy
+        target = d_prev / depth_step
+        if target < min_px or min(prev[2] - prev[0], prev[3] - prev[1]) < 3 * min_px:
+            break
+        window = (vy + 0.75 * target, vy + 1.25 * target)
+        rect, score = find_inner_box(gx, gy, vp, prev, min_px=min_px, y2_window=window)
+        if rect is None or score < stop_frac * ref:
+            break
+        boxes.append(rect)
+        scores.append(score)
+        prev = rect
+    return boxes, scores
+
+
+def _rect_score(gx, gy, vp, rect, bound=None):
+    """Score of one given rectangle (same formula as _search_rect)."""
+    a = lambda v: np.array([int(round(v))])  # noqa: E731
+    _, s = _search_rect(gx, gy, vp, a(rect[0]), a(rect[2]), a(rect[1]), a(rect[3]), bound=bound)
+    return s
 
 
 def fit_edge_line(gx, gy, corner, theta0, span_deg: float = 6.0, n: int = 96):
@@ -307,9 +478,12 @@ class AutoResult:
     vanishing_point: tuple[float, float]
     back_wall: list[float]
     rays: dict  # quadrant -> angle in radians (image coords)
+    segments: list = None  # deeper boxes, nearest first (full-res rects)
+    segment_scores: list = None
 
 
-def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0) -> AutoResult:
+def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, deeper: bool = True,
+                        max_boxes: int = 8) -> AutoResult:
     """Run the detector on an RGB/gray float image; returns full-res coords."""
     small, s = downscale(image, max_side)
     gray = to_gray(small)
@@ -330,12 +504,14 @@ def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0) -
     vp, bw, _ = best
     vp = refine_vp_from_corners(gx, gy, vp, bw)
     rays = rays_from_rect(vp, bw)
+    segs, seg_scores = (find_deeper_boxes(gx, gy, vp, bw, max_boxes=max_boxes) if deeper else ([], []))
     inv = 1.0 / s
     # Map back to full-res pixel coordinates (pixel centers).
     to_full = lambda v: (v + 0.5) * inv - 0.5  # noqa: E731
     vp_full = (round(to_full(vp[0]), 1), round(to_full(vp[1]), 1))
     bw_full = [round(to_full(v), 1) for v in bw]
-    return AutoResult(vp_full, bw_full, rays)
+    segs_full = [[round(to_full(v), 1) for v in r] for r in segs]
+    return AutoResult(vp_full, bw_full, rays, segs_full, seg_scores)
 
 
 def auto_annotate(image_path: str, image: np.ndarray | None = None, **kw) -> Annotation:
@@ -344,4 +520,5 @@ def auto_annotate(image_path: str, image: np.ndarray | None = None, **kw) -> Ann
 
         image = load_image(image_path)
     r = auto_annotate_array(image, **kw)
-    return Annotation(image=str(image_path), vanishing_point=r.vanishing_point, back_wall=tuple(r.back_wall))
+    return Annotation(image=str(image_path), vanishing_point=r.vanishing_point, back_wall=tuple(r.back_wall),
+                      segments=r.segments or [])
