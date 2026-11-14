@@ -14,13 +14,11 @@ Works for one-point-perspective interiors (camera looking down the room).
    how consistently the image changes across each of the four rays (from
    its corner outward), plus edge strength along the rectangle's own sides.
    Running sums make the exhaustive 4D search cheap.
-3. Deeper boxes (find_deeper_boxes). Walk down the room in depth steps of
-   about 1.5x. Each next box must contain the VP, sit inside the previous one
-   and keep a similar 3D size. Its rectangle is scored like the back wall,
-   except the junction edges are checked only over the exact stretch where
-   that box's floor/ceiling/wall edges would run, from its far corner out to
-   where it meets the previous box. It stops when the evidence gets weak or
-   the boxes get too small.
+3. Deeper boxes (find_deeper_boxes). Dynamic programming over where each
+   box ends, with no fixed spacing. A box gains the edge evidence along its
+   four floor/ceiling/wall junctions (over the exact stretch where they'd
+   run) plus the edges of its end rectangle, minus a fixed cost per box. So
+   the boxes split only where a real boundary is visible.
 
 The result is a starting point. scripts/annotate.py opens it for adjustment.
 """
@@ -296,125 +294,155 @@ def _box_shape(rect, vp):
     return (x2 - x1) / d, (y2 - y1) / d
 
 
-def segment_support(gx, gy, vp, cx, cy, ratio, n: int = 24, slack: int = 2, full_len: float = 25.0,
-                    pct: float = 65.0):
-    """Edge support along a room-edge segment that starts at corner (cx, cy)
-    and runs away from the VP until it is `ratio` times as far from the VP.
+def _ray_prefix(gx, gy, vp, xs, ys, slack: int = 2):
+    """Running sums of edge evidence along the outward ray from every corner
+    (x, y) on the grid xs x ys, in 1 px steps out to the image border.
 
-    A box ending at depth Z_k starts at the previous box's depth Z_{k-1}, so
-    its floor/wall and ceiling/wall junctions run from its far corner outward
-    by exactly ratio = Z_k / Z_{k-1}. Score = the `pct`-th percentile of edge
-    strength across the segment, scaled down for segments shorter than
-    `full_len` px (too short to be reliable). With pct = 65, the edge must
-    run along about 35% of the segment. Deeper boxes' junctions are often
-    partly hidden behind the previous box's back wall, so requiring the
-    whole length (the median or more) would be too strict. Arrays broadcast
-    together."""
+    Evidence at a sample is the edge strength across the ray (best within
+    +-slack px), divided by a high percentile and capped at 1, so a solid
+    room edge contributes about 1 per pixel of length. Returns
+    (prefix[ix, iy, k] = evidence over the first k px, d0 = corner distance
+    from the VP, room = px available before the border)."""
     h, w = gx.shape
-    cx, cy, ratio = np.broadcast_arrays(np.asarray(cx, np.float32), np.asarray(cy, np.float32),
-                                        np.asarray(ratio, np.float32))
-    shape = cx.shape
-    cx, cy, ratio = cx.ravel(), cy.ravel(), ratio.ravel()
-    ddx, ddy = cx - vp[0], cy - vp[1]
-    d0 = np.hypot(ddx, ddy) + 1e-6
-    ux, uy = ddx / d0, ddy / d0
-    d1 = np.minimum(d0 * ratio, _ray_length(vp, ux, uy, w, h))
-    seg = np.maximum(d1 - d0, 0)
-    t = d0[:, None] + np.linspace(0, 1, n)[None, :] * seg[:, None]
-    x, y = vp[0] + t * ux[:, None], vp[1] + t * uy[:, None]
-    nx, ny = -uy[:, None], ux[:, None]
+    cap = np.percentile(np.hypot(gx, gy), 97) + 1e-6
+    X, Y = np.meshgrid(np.asarray(xs, np.float32), np.asarray(ys, np.float32), indexing="ij")
+    dx, dy = X - vp[0], Y - vp[1]
+    d0 = np.hypot(dx, dy) + 1e-6
+    ux, uy = dx / d0, dy / d0
+    room = np.maximum(_ray_length(vp, ux, uy, w, h) - d0, 0)
+    t = np.arange(int(np.ceil(room.max())) + 1, dtype=np.float32)
+    x, y = X[..., None] + t * ux[..., None], Y[..., None] + t * uy[..., None]
+    nx, ny = -uy[..., None], ux[..., None]
     g = np.zeros_like(x)
     for o in range(-slack, slack + 1):
         xo, yo = x + o * nx, y + o * ny
         g = np.maximum(g, np.abs(_sample(gx, xo, yo) * nx + _sample(gy, xo, yo) * ny))
-    return (np.percentile(g, pct, axis=1) * np.sqrt(np.clip(seg / full_len, 0, 1))).reshape(shape)
+    g = np.minimum(g / cap, 1.0) * (t <= room[..., None])
+    prefix = np.concatenate([np.zeros(g.shape[:2] + (1,), np.float32), np.cumsum(g, axis=-1)], axis=-1)
+    return prefix, d0, room
 
 
-def find_inner_box(gx, gy, vp, prev, step: int = 2, min_px: int = 6, min_gap: int = 2,
-                   shape_range=(0.7, 1.1), y2_window=None):
-    """Best rectangle for the next box behind `prev` (all coords in the
-    detector's image). It must contain the VP, lie inside `prev`, have its
-    bottom edge closer to the VP than prev's (farther away), and keep a 3D
-    width, height and aspect ratio within `shape_range` of prev's (default:
-    at most 30% smaller, at most 10% bigger, since rooms seen through a
-    doorway are rarely bigger than the room in front). That rules out door
-    panels, posters and other rectangles that would mean a corridor suddenly
-    shrinking or ballooning. y2_window = (lo, hi) restricts the bottom edge.
+def find_deeper_boxes(gx, gy, vp, back_wall, step: int = 2, min_px: int = 6, ratio_range=(1.05, 12.0),
+                      shape_range=(0.7, 1.1), box_cost: float = 0.6, edge_norm: float = 50.0,
+                      bottom_min: float = 0.3, side_min: float = 0.2, min_inset: int = 3):
+    """Chain of further boxes behind the back wall, nearest first, by dynamic
+    programming over where the boxes end. No fixed spacing between boxes.
 
-    score = support of the four junction segments the box would have (see
-            segment_support) + edges along the rectangle (as for the back wall)."""
+    A box ending at depth Z_k starts at the previous box's depth Z_{k-1}, so
+    each of its four floor/ceiling/wall junctions runs from its far corner
+    outward to Z_k / Z_{k-1} times as far from the VP. A box's gain is
+
+        junction evidence summed along those four segments / edge_norm
+      + edge evidence along its end rectangle (as for the back wall)
+      - box_cost.
+
+    Junction evidence is a sum over length, so splitting a uniform corridor
+    gains nothing. A split pays off only where a real boundary (door frame,
+    step, end wall) adds edge evidence above box_cost.
+
+    DP over candidate bottom rows y (near to far): best[y] = the best total
+    gain of a chain whose last box ends at row y. It comes from any nearer
+    box end whose depth ratio is within ratio_range, and that box's
+    cross-section is fitted given the previous box's. Each box must contain
+    the VP, lie inside the previous box, and keep a 3D width, height and
+    aspect within shape_range of it (at most 30% smaller or 10% bigger:
+    rooms seen through a doorway are rarely bigger than the room in front).
+    That rules out door panels and posters. A box must also end at a visible
+    floor boundary (mean edge strength >= bottom_min along its bottom edge)
+    and visible sides (>= side_min),
+    be at least 5% deeper than the previous box, and be inset at least
+    min_inset px from it on every side. That drops paper-thin boxes, which
+    can't be told apart from the edge of an opening.
+    The answer is the best chain overall, which may be empty.
+    """
     vx, vy = vp
-    px1, py1, px2, py2 = prev
-    X1 = np.arange(np.ceil(px1) + 1, int(vx) - min_px + 1, step).astype(int)
-    X2 = np.arange(int(vx) + min_px, np.floor(px2), step).astype(int)
-    Y1 = np.arange(np.ceil(py1) + 1, int(vy) - min_px + 1, step).astype(int)
-    Y2 = np.arange(int(vy) + min_px, np.floor(py2) - min_gap + 1, step).astype(int)
-    if y2_window is not None:
-        Y2 = Y2[(Y2 >= y2_window[0]) & (Y2 <= y2_window[1])]
-    if min(len(X1), len(X2), len(Y1), len(Y2)) == 0:
-        return None, -np.inf
-    ratio = (py2 - vy) / (Y2 - vy)  # Z_k / Z_{k-1}, depends on y2 only
+    bx1, by1, bx2, by2 = back_wall
+    xs = np.arange(int(np.ceil(bx1)) + 1, int(bx2), step)
+    ys = np.arange(int(np.ceil(by1)) + 1, int(by2), step)
+    if len(xs) < 2 or len(ys) < 2:
+        return [], []
+    prefix, d0, room = _ray_prefix(gx, gy, vp, xs, ys)
+    ix_of = {int(v): i for i, v in enumerate(xs)}
+    iy_of = {int(v): i for i, v in enumerate(ys)}
+    agy = _band_max(np.abs(gy), axis=0)
+    agx = _band_max(np.abs(gx), axis=1)
+    cap = np.percentile(np.hypot(gx, gy), 97) + 1e-6
+    Ch = np.concatenate([np.zeros((gy.shape[0], 1)), np.cumsum(agy, axis=1)], axis=1) / cap
+    Cv = np.concatenate([np.zeros((1, gx.shape[1])), np.cumsum(agx, axis=0)], axis=0) / cap
 
-    # Junction segments. Bottom corners: (x, y2). Top corners: (x, y1, y2), since
-    # their length depends on the box's depth, which comes from y2.
-    R_bl = segment_support(gx, gy, vp, X1[:, None], Y2[None, :], ratio[None, :])  # (x1, y2)
-    R_br = segment_support(gx, gy, vp, X2[:, None], Y2[None, :], ratio[None, :])  # (x2, y2)
-    R_tl = segment_support(gx, gy, vp, X1[:, None, None], Y1[None, :, None], ratio[None, None, :])  # (x1, y1, y2)
-    R_tr = segment_support(gx, gy, vp, X2[:, None, None], Y1[None, :, None], ratio[None, None, :])  # (x2, y1, y2)
-    E_b, E_t, V_l, V_r = _edge_terms(gx, gy, X1, X2, Y1, Y2)
+    def seg(ix, iy, ratio):
+        """Junction evidence from corner (xs[ix], ys[iy]) out to `ratio` x its VP distance."""
+        k = np.clip(np.round((ratio - 1) * d0[ix, iy]), 0, room[ix, iy]).astype(int)
+        return prefix[ix, iy, k]
 
-    S = (
-        R_bl[:, None, None, :] + R_br[None, :, None, :] + R_tl[:, None, :, :] + R_tr[None, :, :, :]
-        + E_b[:, :, None, :] + E_t[:, :, :, None]
-        + 0.5 * (V_l[:, None, :, :] + V_r[None, :, :, :])
-    )
-    pw, ph = _box_shape(prev, vp)
-    lo, hi = shape_range
-    x1, x2 = X1[:, None, None, None], X2[None, :, None, None]
-    y1, y2 = Y1[None, None, :, None], Y2[None, None, None, :]
-    d = y2 - vy
-    w3, h3 = (x2 - x1) / d, (y2 - y1) / d
-    ok = (w3 > lo * pw) & (w3 < hi * pw) & (h3 > lo * ph) & (h3 < hi * ph)
-    # Similar proportions too: corridors don't go from wide to tall.
-    asp, pasp = h3 / w3, ph / pw
-    ok &= (asp > 0.75 * pasp) & (asp < 1.33 * pasp)
-    S = np.where(ok, S, -np.inf)
-    k = int(np.argmax(S))
-    if not np.isfinite(S.ravel()[k]):
-        return None, -np.inf
-    i1, i2, j1, j2 = np.unravel_index(k, S.shape)
-    return [float(X1[i1]), float(Y1[j1]), float(X2[i2]), float(Y2[j2])], float(S.ravel()[k])
+    def best_box(prev, y2):
+        """Best (gain, rect) for a box ending at row y2 behind box `prev`."""
+        ratio = (prev[3] - vy) / (y2 - vy)
+        if not ratio_range[0] <= ratio <= ratio_range[1] or prev[3] - y2 < min_inset:
+            return -np.inf, None
+        # Seen through the previous box's opening, the next box must be
+        # visibly smaller on every side (by more than an edge's blur width),
+        # so near-duplicate boxes can't re-claim the same edges.
+        X1 = np.array([x for x in xs if prev[0] + min_inset <= x <= vx - min_px])
+        X2 = np.array([x for x in xs if vx + min_px <= x <= prev[2] - min_inset])
+        Y1 = np.array([y for y in ys if prev[1] + min_inset <= y <= vy - min_px])
+        if min(len(X1), len(X2), len(Y1)) == 0:
+            return -np.inf, None
+        i1 = np.array([ix_of[int(x)] for x in X1])
+        i2 = np.array([ix_of[int(x)] for x in X2])
+        j1 = np.array([iy_of[int(y)] for y in Y1])
+        j2 = iy_of[int(y2)]
+        x1, x2, y1 = X1[:, None, None], X2[None, :, None], Y1[None, None, :]
+        junction = (seg(i1, j2, ratio)[:, None, None] + seg(i2, j2, ratio)[None, :, None]
+                    + seg(i1[:, None], j1[None, :], ratio)[:, None, :]
+                    + seg(i2[:, None], j1[None, :], ratio)[None, :, :])
+        bottom = (Ch[y2, x2] - Ch[y2, x1]) / (x2 - x1)
+        sides = 0.5 * ((Cv[y2, x1] - Cv[y1, x1]) + (Cv[y2, x2] - Cv[y1, x2])) / (y2 - y1)
+        edges = bottom + (Ch[y1, x2] - Ch[y1, x1]) / (x2 - x1) + sides
+        gain = junction / edge_norm + edges - box_cost
+        # A box end must show up as a rectangle: a visible floor boundary
+        # (threshold, step, baseboard or end wall) and visible side edges
+        # (frame or wall corners). The bottom is the only edge tied to depth,
+        # since it's a floor row. Without it, a box's sides and top could
+        # borrow deeper frames' edges at any depth. Without sides, a tile
+        # grout line on the floor looks like a box end.
+        gain = np.where((bottom >= bottom_min) & (sides >= side_min), gain, -np.inf)
+        # Shape relative to the previous box (3D size ~ pixels / depth-row offset).
+        pw, ph = _box_shape(prev, vp)
+        d = y2 - vy
+        w3, h3 = (x2 - x1) / d, (y2 - y1) / d
+        lo, hi = shape_range
+        ok = (w3 > lo * pw) & (w3 < hi * pw) & (h3 > lo * ph) & (h3 < hi * ph)
+        ok &= (h3 / w3 > 0.75 * ph / pw) & (h3 / w3 < 1.33 * ph / pw)
+        gain = np.where(ok, gain, -np.inf)
+        k = int(np.argmax(gain))
+        if not np.isfinite(gain.ravel()[k]):
+            return -np.inf, None
+        a, b, c = np.unravel_index(k, gain.shape)
+        return float(gain.ravel()[k]), [float(X1[a]), float(Y1[c]), float(X2[b]), float(y2)]
 
+    # States: (total gain, rect, index of previous state). State 0 is the back wall.
+    states = [(0.0, list(back_wall), -1)]
+    for y2 in sorted((int(y) for y in ys if vy + min_px <= y < by2), reverse=True):
+        best = (-np.inf, None, -1)
+        for i, (total, rect, _) in enumerate(states):
+            if rect[3] <= y2:
+                continue
+            g, r = best_box(rect, y2)
+            if r is not None and total + g > best[0]:
+                best = (total + g, r, i)
+        if best[1] is not None:
+            states.append(best)
 
-def find_deeper_boxes(gx, gy, vp, back_wall, max_boxes: int = 8, depth_step: float = 1.5,
-                      stop_frac: float = 0.3, min_px: int = 6):
-    """Chain of further boxes behind the back wall, nearest first.
-
-    Walks down the room in geometric depth steps: each box ends about
-    `depth_step` times deeper than the previous one. In image terms, its
-    bottom edge is about 1/depth_step as far below the VP. Within +-25% of that
-    depth the boundary snaps to the best-supported rectangle, whose
-    cross-section is fitted to the local floor/ceiling/wall junctions (see
-    find_inner_box). It stops when boxes get too small to fit around the VP,
-    when the evidence gets weak (score < stop_frac x the back wall's), or
-    after max_boxes boxes."""
-    vx, vy = vp
-    ref = _rect_score(gx, gy, vp, back_wall, bound=None)
-    boxes, scores = [], []
-    prev = back_wall
-    for _ in range(max_boxes):
-        d_prev = prev[3] - vy
-        target = d_prev / depth_step
-        if target < min_px or min(prev[2] - prev[0], prev[3] - prev[1]) < 3 * min_px:
-            break
-        window = (vy + 0.75 * target, vy + 1.25 * target)
-        rect, score = find_inner_box(gx, gy, vp, prev, min_px=min_px, y2_window=window)
-        if rect is None or score < stop_frac * ref:
-            break
-        boxes.append(rect)
-        scores.append(score)
-        prev = rect
-    return boxes, scores
+    # Best chain overall (state 0 = no deeper boxes), traced back.
+    i = int(np.argmax([s[0] for s in states]))
+    chain = []
+    while i > 0:
+        chain.append(states[i])
+        i = states[i][2]
+    chain.reverse()
+    gains = [c[0] - (states[c[2]][0]) for c in chain]
+    return [c[1] for c in chain], gains
 
 
 def _rect_score(gx, gy, vp, rect, bound=None):
@@ -482,8 +510,7 @@ class AutoResult:
     segment_scores: list = None
 
 
-def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, deeper: bool = True,
-                        max_boxes: int = 8) -> AutoResult:
+def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, deeper: bool = True) -> AutoResult:
     """Run the detector on an RGB/gray float image; returns full-res coords."""
     small, s = downscale(image, max_side)
     gray = to_gray(small)
@@ -504,7 +531,7 @@ def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, d
     vp, bw, _ = best
     vp = refine_vp_from_corners(gx, gy, vp, bw)
     rays = rays_from_rect(vp, bw)
-    segs, seg_scores = (find_deeper_boxes(gx, gy, vp, bw, max_boxes=max_boxes) if deeper else ([], []))
+    segs, seg_scores = (find_deeper_boxes(gx, gy, vp, bw) if deeper else ([], []))
     inv = 1.0 / s
     # Map back to full-res pixel coordinates (pixel centers).
     to_full = lambda v: (v + 0.5) * inv - 0.5  # noqa: E731

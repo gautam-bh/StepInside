@@ -102,20 +102,30 @@ CORRIDOR = dict(
 )
 
 
-def test_deeper_boxes_on_synthetic_corridor():
+# Unevenly spaced: a thin door-frame-like box (1.1x deeper) and then a long
+# one (2.5x deeper). A fixed depth step can't find both.
+UNEVEN = dict(
+    vp=(300.0, 420.0),
+    back_wall=(190.0, 290.0, 410.0, 560.0),
+    segments=[(225.1, 331.5, 374.9, 547.0), (277.5, 393.3, 322.5, 471.0)],
+)
+
+
+def _deeper_boxes_match(case):
     """The deeper-box stage on its own: given the true VP and back wall, it
-    should find the two nested boxes. (Back-wall detection has its own tests.
+    should find the nested boxes. (Back-wall detection has its own tests.
     Here the doorway reaches the floor, so the outer wall's bottom edge is
     nearly invisible and full detection reasonably takes the inner frame as
     the back wall.)"""
-    img = synthetic_room(CORRIDOR["vp"], CORRIDOR["back_wall"], segments=CORRIDOR["segments"])
+    img = synthetic_room(case["vp"], case["back_wall"], segments=case["segments"])
     small, s = downscale(img, 640)  # same working resolution as the pipeline
     gx, gy = gradients(to_gray(small), sigma=1.0)
     to_small = lambda v: (np.asarray(v, float) + 0.5) * s - 0.5  # noqa: E731
     to_full = lambda v: (np.asarray(v, float) + 0.5) / s - 0.5  # noqa: E731
-    boxes, _ = find_deeper_boxes(gx, gy, tuple(to_small(CORRIDOR["vp"])), list(to_small(CORRIDOR["back_wall"])))
-    assert len(boxes) >= 2, f"found {len(boxes)} deeper boxes: {boxes}"
-    for found, truth in zip(boxes, CORRIDOR["segments"]):
+    boxes, _ = find_deeper_boxes(gx, gy, tuple(to_small(case["vp"])), list(to_small(case["back_wall"])))
+    found_full = [list(np.round(to_full(b), 1)) for b in boxes]
+    assert len(boxes) == len(case["segments"]), f"found {found_full}, expected {case['segments']}"
+    for found, truth in zip(boxes, case["segments"]):
         err = np.abs(to_full(found) - np.array(truth))
         # Sides and top are set by visible door-frame edges. The bottom, where
         # the box ends along a continuous floor, is the least constrained.
@@ -123,14 +133,27 @@ def test_deeper_boxes_on_synthetic_corridor():
         assert err[3] < 15.0, f"deeper box bottom {to_full(found)[3]:.1f} vs truth {truth[3]}"
 
 
+def test_deeper_boxes_on_synthetic_corridor():
+    _deeper_boxes_match(CORRIDOR)
+
+
+def test_deeper_boxes_unevenly_spaced():
+    _deeper_boxes_match(UNEVEN)
+
+
 def test_hallway_deeper_boxes():
     ann = load_annotation(ROOT / "data" / "annotations" / "hallway.json")
     image = load_image(ann.image)
     r = auto_annotate_array(image)
     assert len(r.segments) >= 3, f"only {len(r.segments)} deeper boxes"
-    # The first box behind the doorway matches the hand-drawn corridor box.
-    err = np.abs(np.array(r.segments[0]) - np.array(ann.segments[1])).max()
-    assert err < 25, f"first deeper box {r.segments[0]} vs hand {ann.segments[1]}"
+    # Boxes end at real boundaries: the first at the corridor's left-wall step
+    # (hand box ending at y=740), the last at the end wall (hand y=666). The
+    # hand annotation's other splits (e.g. y=790) were judgment calls with no
+    # strong edge, so they aren't required.
+    hand_bottoms = np.array([r_[3] for r_ in ann.segments])
+    first, last = r.segments[0], r.segments[-1]
+    assert np.abs(hand_bottoms - first[3]).min() < 15, f"first box {first} ends away from any hand boundary"
+    assert abs(last[3] - ann.segments[-1][3]) < 15, f"last box {last} vs hand end wall {ann.segments[-1]}"
     # The whole chain builds a valid scene, getting deeper box by box.
     auto = Annotation(image=ann.image, vanishing_point=r.vanishing_point, back_wall=tuple(r.back_wall),
                       segments=r.segments)
