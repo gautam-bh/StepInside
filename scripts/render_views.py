@@ -28,6 +28,7 @@ VIEWS = {
     "right_0.3m": (0.3, 0.0, 0.0),
     "forward_1.5m": (0.0, 0.0, 1.5),
     "up_0.3m": (0.0, 0.3, 0.0),
+    "through_door_9m": (0.0, 0.0, 9.0),
 }
 
 
@@ -55,7 +56,8 @@ def main():
     h, w = image.shape[:2]
     scene = build_scene(ann, w, h)
     raw = extract_textures(scene, image, [f.polygon for f in ann.foreground])
-    filled = {k: (push_pull_fill(v) if k in {"back", "floor", "ceiling", "left", "right"} else v) for k, v in raw.items()}
+    box_names = {p.name for p in scene.planes if p.kind == "box"}
+    filled = {k: (push_pull_fill(v) if k in box_names else v) for k, v in raw.items()}
 
     name = Path(a.annotation).stem
     out = Path(a.out or ROOT / "outputs" / name)

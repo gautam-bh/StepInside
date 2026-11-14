@@ -32,6 +32,7 @@ def write_scene(scene: Scene, textures: dict, out_dir, image_name: str, source_i
         entry = {
             "name": plane.name,
             "kind": plane.kind,
+            "segment": plane.segment,
             # Order: top-left, top-right, bottom-right, bottom-left of the texture.
             "corners": [to_three(c) for c in plane.corners],
             "texture": f"{plane.name}.png",
@@ -51,11 +52,10 @@ def write_scene(scene: Scene, textures: dict, out_dir, image_name: str, source_i
         "height": scene.height,
         "focal": scene.focal,
         "principal": list(scene.principal),
-        "box": {
-            "x": [scene.xl, scene.xr],
-            "y": [scene.yf, scene.yc],
-            "z": [-scene.z_near, -scene.depth],
-        },
+        # Room segments in three.js coordinates (z is negative going forward).
+        "boxes": [
+            {"x": [b.xl, b.xr], "y": [b.yf, b.yc], "z": [-b.z0, -b.z1]} for b in scene.boxes
+        ],
         "planes": planes,
     }
     (out / "scene.json").write_text(json.dumps(meta, indent=2) + "\n")

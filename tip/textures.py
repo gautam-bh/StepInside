@@ -65,7 +65,31 @@ def texture_resolution(plane: Plane, scene: Scene, max_res: int, n: int = 96) ->
     return clamp(rows), clamp(cols)
 
 
-def box_texture(plane: Plane, scene: Scene, image: np.ndarray, fg_mask: np.ndarray, max_res: int) -> np.ndarray:
+def visible_plane_ids(scene: Scene) -> np.ndarray:
+    """For each photo pixel, the index (into scene.planes) of the box plane the
+    input camera sees there, or -1. Used to keep each texture to the part of
+    the photo where its plane is actually visible (e.g. a corridor wall
+    hidden behind a door frame gets holes, not door-frame pixels)."""
+    from .render import _hit
+
+    u, v = np.meshgrid(np.arange(scene.width) + 0.5, np.arange(scene.height) + 0.5)
+    vx, vy = scene.principal
+    dirs = np.stack([(u - vx) / scene.focal, -(v - vy) / scene.focal, np.ones_like(u)], axis=-1)
+    cam = np.zeros(3)
+    best_t = np.full(u.shape, np.inf)
+    ids = np.full(u.shape, -1, dtype=np.int32)
+    for i, plane in enumerate(scene.planes):
+        if plane.kind != "box":
+            continue
+        t, _, _, valid = _hit(plane, cam, dirs)
+        closer = valid & (t < best_t)
+        best_t[closer] = t[closer]
+        ids[closer] = i
+    return ids
+
+
+def box_texture(plane: Plane, scene: Scene, image: np.ndarray, fg_mask: np.ndarray, max_res: int,
+                plane_ids: np.ndarray | None = None, plane_index: int = -1) -> np.ndarray:
     rows, cols = texture_resolution(plane, scene, max_res)
     s = (np.arange(cols) + 0.5) / cols
     t = (np.arange(rows) + 0.5) / rows
@@ -75,6 +99,17 @@ def box_texture(plane: Plane, scene: Scene, image: np.ndarray, fg_mask: np.ndarr
     ui = np.clip(np.round(np.nan_to_num(u)).astype(int), 0, scene.width - 1)
     vi = np.clip(np.round(np.nan_to_num(v)).astype(int), 0, scene.height - 1)
     valid &= ~fg_mask[vi, ui]
+    if plane_ids is not None:
+        # Visible if the plane owns the nearest photo pixel or one of its
+        # neighbours, so seams between planes don't open up.
+        x0 = np.clip(np.floor(np.nan_to_num(u) - 0.5).astype(int), 0, scene.width - 1)
+        y0 = np.clip(np.floor(np.nan_to_num(v) - 0.5).astype(int), 0, scene.height - 1)
+        x1 = np.minimum(x0 + 1, scene.width - 1)
+        y1 = np.minimum(y0 + 1, scene.height - 1)
+        own = np.zeros_like(valid)
+        for yy, xx in ((y0, x0), (y0, x1), (y1, x0), (y1, x1)):
+            own |= plane_ids[yy, xx] == plane_index
+        valid &= own
     alpha = valid.astype(np.float32)[..., None]
     return np.concatenate([rgb * alpha, alpha], axis=-1).astype(np.float32)
 
@@ -134,9 +169,10 @@ def extract_textures(scene: Scene, image: np.ndarray, foreground_polys, max_res:
     fg_mask = polygon_mask(foreground_polys, scene.width, scene.height, dilate=3)
     textures = {}
     fg_iter = iter(foreground_polys)
-    for plane in scene.planes:
+    ids = visible_plane_ids(scene)
+    for i, plane in enumerate(scene.planes):
         if plane.kind == "box":
-            textures[plane.name] = box_texture(plane, scene, image, fg_mask, max_res)
+            textures[plane.name] = box_texture(plane, scene, image, fg_mask, max_res, ids, i)
         else:
             textures[plane.name] = foreground_texture(next(fg_iter), image)
     return textures

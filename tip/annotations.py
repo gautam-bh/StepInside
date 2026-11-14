@@ -36,6 +36,9 @@ class Annotation:
     # Real-world eye height in meters; sets the scene's scale.
     camera_height: float = 1.6
     foreground: list[Foreground] = field(default_factory=list)
+    # Further boxes behind the back wall (e.g. a corridor beyond a doorway),
+    # each given as the image rectangle of its far end, nearest first.
+    segments: list[list[float]] = field(default_factory=list)
 
     def focal_px(self, width: int, height: int) -> float:
         """Focal length in pixels (35mm frame long side = 36mm)."""
@@ -65,6 +68,7 @@ def save_annotation(ann: Annotation, path: str | Path) -> None:
         "back_wall": list(ann.back_wall),
         "focal_35mm": ann.focal_35mm,
         "camera_height": ann.camera_height,
+        "segments": [list(r) for r in ann.segments],
         "foreground": [
             {k: v for k, v in f.__dict__.items() if v is not None} for f in ann.foreground
         ],

@@ -37,6 +37,9 @@ def draw(ann_path, out_path, crop=None):
     for c in [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]:
         d.line([c, border_hit(vp, c, w, h)], fill=(0, 255, 255), width=3)
     d.rectangle([x1, y1, x2, y2], outline=(255, 0, 255), width=4)
+    colors = [(255, 200, 0), (0, 200, 255), (120, 255, 120), (255, 120, 120), (200, 120, 255), (255, 255, 255)]
+    for i, r in enumerate(ann.segments):
+        d.rectangle(list(r), outline=colors[i % len(colors)], width=2)
     r = 8
     d.ellipse([vp[0] - r, vp[1] - r, vp[0] + r, vp[1] + r], outline=(255, 0, 0), width=3)
     for fg in ann.foreground:

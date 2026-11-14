@@ -33,10 +33,11 @@ def main():
     out = write_scene(scene, textures, a.out or ROOT / "scenes" / name, Path(ann.image).name, image)
 
     print(f"scene '{name}': {w}x{h}, f={scene.focal:.0f}px, vp={scene.principal}")
-    print(
-        f"  box  x[{scene.xl:.2f}, {scene.xr:.2f}]  y[{scene.yf:.2f}, {scene.yc:.2f}]  "
-        f"z[{scene.z_near:.2f}, {scene.depth:.2f}] m"
-    )
+    for k, b in enumerate(scene.boxes):
+        print(
+            f"  box {k}  x[{b.xl:6.2f}, {b.xr:5.2f}]  y[{b.yf:5.2f}, {b.yc:5.2f}]  "
+            f"z[{b.z0:6.2f}, {b.z1:6.2f}] m"
+        )
     for p in scene.planes:
         t = textures[p.name]
         holes = (t[..., 3] < 0.5).mean()

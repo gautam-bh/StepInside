@@ -28,11 +28,24 @@ def _setup(scale_img=0.25):
 def test_back_wall_projects_to_annotation():
     ann = load_annotation(ANN)
     scene = build_scene(ann, 1200, 1600)
-    back = next(p for p in scene.planes if p.name == "back")
-    u, v = project(back.corners, scene.focal, scene.principal)
+    by = {p.name: p for p in scene.planes}
     x1, y1, x2, y2 = ann.back_wall
-    np.testing.assert_allclose(u, [x1, x2, x2, x1], atol=1e-6)
-    np.testing.assert_allclose(v, [y1, y1, y2, y2], atol=1e-6)
+    # Back wall of box 0 is split into bands around the doorway; its outer
+    # corners still land on the annotated rectangle.
+    u, v = project(by["s0_back_top"].corners[:2], scene.focal, scene.principal)
+    np.testing.assert_allclose(u, [x1, x2], atol=1e-6)
+    np.testing.assert_allclose(v, [y1, y1], atol=1e-6)
+    # The doorway reaches the floor, so there's no bottom band; the floor's far
+    # edge is the back wall's bottom edge instead.
+    u, v = project(by["s0_floor"].corners[:2], scene.focal, scene.principal)
+    np.testing.assert_allclose(u, [x1, x2], atol=1e-6)
+    np.testing.assert_allclose(v, [y2, y2], atol=1e-6)
+    # Every further box's far end projects onto its annotated rectangle.
+    for k, r in enumerate(ann.segments, start=1):
+        b = scene.boxes[k]
+        c = np.array([[b.xl, b.yc, b.z1], [b.xr, b.yf, b.z1]])
+        u, v = project(c, scene.focal, scene.principal)
+        np.testing.assert_allclose([u[0], v[0], u[1], v[1]], r, atol=1e-6)
     assert abs(scene.yf + ann.camera_height) < 1e-9
 
 
@@ -41,8 +54,14 @@ def test_side_planes_meet_back_wall_edges():
     scene = build_scene(ann, 1200, 1600)
     by = {p.name: p for p in scene.planes}
     # The far edge of the floor is the back wall's bottom edge.
-    np.testing.assert_allclose(by["floor"].corners[0], by["back"].corners[3])
-    np.testing.assert_allclose(by["floor"].corners[1], by["back"].corners[2])
+    # The side walls' bottom edges sit on the floor's side edges.
+    np.testing.assert_allclose(by["s0_left"].corners[3], by["s0_floor"].corners[3])
+    np.testing.assert_allclose(by["s0_right"].corners[2], by["s0_floor"].corners[2])
+    # The back-wall bands meet the box's top corners.
+    np.testing.assert_allclose(by["s0_back_top"].corners[0], by["s0_left"].corners[1])
+    # Consecutive boxes share a depth.
+    for a, b in zip(scene.boxes, scene.boxes[1:]):
+        assert abs(a.z1 - b.z0) < 1e-9
 
 
 def test_original_view_reproduces_photo():

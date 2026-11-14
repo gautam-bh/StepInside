@@ -1,4 +1,4 @@
-"""Box geometry for Tour Into the Picture.
+"""Box geometry for Tour Into the Picture, as a chain of boxes.
 
 Camera frame: the input camera sits at the origin, X points right, Y up and
 Z forward into the scene. As in the original TIP paper, the vanishing point
@@ -7,19 +7,23 @@ is the principal point, so the room's depth axis is the optical axis:
     u = vx + f * X / Z
     v = vy - f * Y / Z
 
-The room is the box X in [xl, xr], Y in [yf, yc], Z in [z_near, depth].
-Its scale is set so the floor lies `camera_height` meters below the camera.
+Box 0 is the classic TIP room. It runs from near the camera to the annotated
+back wall. Each further box k (annotation `segments`) continues behind an
+opening in the previous box's back wall. Box k is annotated by the image
+rectangle of its far end. Its depth comes from where its floor edge
+(rectangle bottom) meets the image, assuming the floor stays camera_height
+below the camera. Box k then spans from the previous box's far depth to its
+own, with constant cross-section. Each back wall becomes up to four bands
+around the opening into the next box, and the last box keeps a full back wall.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from .annotations import Annotation, Foreground
-
-BOX_PLANES = ("back", "floor", "ceiling", "left", "right")
 
 
 @dataclass
@@ -35,6 +39,7 @@ class Plane:
     u_axis: np.ndarray
     v_axis: np.ndarray
     kind: str = "box"  # "box" or "foreground"
+    segment: int = 0
 
     def point(self, s, t):
         s = np.asarray(s)[..., None]
@@ -55,18 +60,39 @@ class Plane:
 
 
 @dataclass
+class Box:
+    """Axis-aligned room segment: X in [xl, xr], Y in [yf, yc], Z in [z0, z1]."""
+
+    xl: float
+    xr: float
+    yf: float
+    yc: float
+    z0: float
+    z1: float
+
+
+@dataclass
 class Scene:
     width: int
     height: int
     focal: float
     principal: tuple[float, float]  # (vx, vy)
-    xl: float
-    xr: float
-    yf: float
-    yc: float
-    z_near: float
-    depth: float
-    planes: list[Plane]
+    boxes: list[Box]
+    planes: list[Plane] = field(default_factory=list)
+
+    # Box 0 (the room around the camera), kept for convenience.
+    @property
+    def xl(self): return self.boxes[0].xl
+    @property
+    def xr(self): return self.boxes[0].xr
+    @property
+    def yf(self): return self.boxes[0].yf
+    @property
+    def yc(self): return self.boxes[0].yc
+    @property
+    def z_near(self): return self.boxes[0].z0
+    @property
+    def depth(self): return self.boxes[0].z1
 
 
 def project(points: np.ndarray, focal: float, principal) -> tuple[np.ndarray, np.ndarray]:
@@ -97,54 +123,100 @@ def floor_depth(v_contact: float, scene: Scene) -> float:
     return scene.focal * scene.yf / (vy - v_contact)
 
 
-def build_scene(ann: Annotation, width: int, height: int) -> Scene:
-    vx, vy = ann.vanishing_point
-    x1, y1, x2, y2 = ann.back_wall
-    if not (x1 < vx < x2 and y1 < vy < y2):
-        raise ValueError(
-            "the vanishing point must be inside the back-wall rectangle "
-            f"(vp={ann.vanishing_point}, back_wall={ann.back_wall})"
-        )
-    f = ann.focal_px(width, height)
+def _rect_box(rect, depth, f, vx, vy, z0) -> Box:
+    x1, y1, x2, y2 = rect
+    return Box(
+        xl=(x1 - vx) * depth / f,
+        xr=(x2 - vx) * depth / f,
+        yf=(vy - y2) * depth / f,
+        yc=(vy - y1) * depth / f,
+        z0=z0,
+        z1=depth,
+    )
 
-    # Fix scale so the floor is camera_height below the camera.
-    depth = ann.camera_height * f / (y2 - vy)
-    xl = (x1 - vx) * depth / f
-    xr = (x2 - vx) * depth / f
-    yc = (vy - y1) * depth / f
-    yf = (vy - y2) * depth / f  # == -camera_height
 
-    # Each side plane leaves the image at the matching border. The box runs to
-    # the nearest of those depths. Texels nearer than a plane's own exit fall
-    # outside the photo and become holes.
-    near_exits = {
-        "floor": f * yf / (vy - height),
-        "ceiling": f * yc / vy,
-        "left": f * xl / (0.0 - vx),
-        "right": f * xr / (width - vx),
-    }
-    z_near = max(min(near_exits.values()), 0.02 * depth)
-    z_near = min(z_near, 0.95 * depth)
-
-    W = xr - xl
-    Hh = yc - yf
-    Dz = depth - z_near
+def _box_planes(b: Box, k: int) -> list[Plane]:
+    W, Hh, Dz = b.xr - b.xl, b.yc - b.yf, b.z1 - b.z0
     P = lambda *a: np.array(a, dtype=float)  # noqa: E731
-
-    planes = [
-        # Back wall, seen head-on.
-        Plane("back", P(xl, yc, depth), P(W, 0, 0), P(0, -Hh, 0)),
+    p = f"s{k}_"
+    return [
         # Floor as seen from above: top row far, bottom row near.
-        Plane("floor", P(xl, yf, depth), P(W, 0, 0), P(0, 0, -Dz)),
+        Plane(p + "floor", P(b.xl, b.yf, b.z1), P(W, 0, 0), P(0, 0, -Dz), segment=k),
         # Ceiling: top row near, bottom row far.
-        Plane("ceiling", P(xl, yc, z_near), P(W, 0, 0), P(0, 0, Dz)),
+        Plane(p + "ceiling", P(b.xl, b.yc, b.z0), P(W, 0, 0), P(0, 0, Dz), segment=k),
         # Left wall: left column near, right column far.
-        Plane("left", P(xl, yc, z_near), P(0, 0, Dz), P(0, -Hh, 0)),
+        Plane(p + "left", P(b.xl, b.yc, b.z0), P(0, 0, Dz), P(0, -Hh, 0), segment=k),
         # Right wall: left column far, right column near.
-        Plane("right", P(xr, yc, depth), P(0, 0, -Dz), P(0, -Hh, 0)),
+        Plane(p + "right", P(b.xr, b.yc, b.z1), P(0, 0, -Dz), P(0, -Hh, 0), segment=k),
     ]
 
-    scene = Scene(width, height, f, (vx, vy), xl, xr, yf, yc, z_near, depth, planes)
+
+def _back_wall_planes(b: Box, opening: Box | None, k: int) -> list[Plane]:
+    """Back wall of box b at z1, minus the opening into the next box (if any)."""
+    z = b.z1
+    P = lambda *a: np.array(a, dtype=float)  # noqa: E731
+
+    def rect(name, xl, xr, yb, yt):
+        if xr - xl < 1e-6 or yt - yb < 1e-6:
+            return None
+        return Plane(f"s{k}_{name}", P(xl, yt, z), P(xr - xl, 0, 0), P(0, yb - yt, 0), segment=k)
+
+    if opening is None:
+        return [rect("back", b.xl, b.xr, b.yf, b.yc)]
+    # Clip the opening to this box's cross-section.
+    ol, orr = max(opening.xl, b.xl), min(opening.xr, b.xr)
+    of, oc = max(opening.yf, b.yf), min(opening.yc, b.yc)
+    bands = [
+        rect("back_top", b.xl, b.xr, oc, b.yc),
+        rect("back_bottom", b.xl, b.xr, b.yf, of),
+        rect("back_left", b.xl, ol, of, oc),
+        rect("back_right", orr, b.xr, of, oc),
+    ]
+    return [p for p in bands if p is not None]
+
+
+def build_scene(ann: Annotation, width: int, height: int) -> Scene:
+    vx, vy = ann.vanishing_point
+    f = ann.focal_px(width, height)
+    rects = [tuple(ann.back_wall)] + [tuple(r) for r in ann.segments]
+    for i, (x1, y1, x2, y2) in enumerate(rects):
+        if not (x1 < vx < x2 and y1 < vy < y2):
+            raise ValueError(
+                f"the vanishing point {ann.vanishing_point} must be inside every box rectangle; "
+                f"box {i} is {rects[i]}"
+            )
+
+    # Box 0: depth set so the floor is camera_height below the camera.
+    x1, y1, x2, y2 = rects[0]
+    depth0 = ann.camera_height * f / (y2 - vy)
+    b0 = _rect_box(rects[0], depth0, f, vx, vy, z0=0.0)
+    # Each side plane leaves the image at the matching border. Box 0 runs to
+    # the nearest of those depths. Texels nearer than a plane's own exit fall
+    # outside the photo and become holes.
+    near_exits = [
+        f * b0.yf / (vy - height),
+        f * b0.yc / vy,
+        f * b0.xl / (0.0 - vx),
+        f * b0.xr / (width - vx),
+    ]
+    b0.z0 = float(np.clip(min(near_exits), 0.02 * depth0, 0.95 * depth0))
+    boxes = [b0]
+
+    # Further boxes: depth from the bottom of their far-end rectangle.
+    for k, r in enumerate(rects[1:], start=1):
+        prev = boxes[-1]
+        z = ann.camera_height * f / (r[3] - vy)
+        if z <= prev.z1 + 1e-6:
+            raise ValueError(
+                f"box {k} {r} must be farther than box {k - 1}: its bottom edge (y={r[3]}) "
+                f"must be closer to the vanishing point than the previous box's"
+            )
+        boxes.append(_rect_box(r, z, f, vx, vy, z0=prev.z1))
+
+    scene = Scene(width, height, f, (vx, vy), boxes)
+    for k, b in enumerate(boxes):
+        scene.planes += _box_planes(b, k)
+        scene.planes += _back_wall_planes(b, boxes[k + 1] if k + 1 < len(boxes) else None, k)
     for fg in ann.foreground:
         scene.planes.append(foreground_plane(fg, scene))
     return scene

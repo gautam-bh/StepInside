@@ -45,7 +45,8 @@
   <div id="pos"></div>
   <p class="help">
     Drag to move sideways and up/down · scroll or W/S to walk forward and back ·
-    A/D strafe · Q/E up/down · Shift+drag to look around.<br>
+    A/D strafe · Q/E up/down · hold Shift to run · Shift+drag to look around.
+    Walk through the doorway to go down the corridor.<br>
     Holes (no photo data) show in magenta.
   </p>
 </div>
@@ -123,7 +124,13 @@ await Promise.all(meta.planes.map(async (p) => {
   const raw = await loadTex(p.texture);
   if (p.kind === "box") {
     const filled = await loadTex(p.texture_filled);
-    const mat = new THREE.MeshBasicMaterial({ map: raw, side: THREE.DoubleSide, alphaTest: 0.5 });
+    const mat = new THREE.MeshBasicMaterial({ map: raw, side: THREE.DoubleSide });
+    // Paint holes (alpha < 0.5) solid magenta instead of seeing through them,
+    // so a hole in a near wall doesn't show the boxes behind it.
+    mat.onBeforeCompile = (sh) => {
+      sh.fragmentShader = sh.fragmentShader.replace("#include <map_fragment>",
+        "#include <map_fragment>\n if (diffuseColor.a < 0.5) diffuseColor = vec4(1.0, 0.0, 1.0, 1.0);\n diffuseColor.a = 1.0;");
+    };
     const mesh = new THREE.Mesh(geo, mat);
     mesh.userData = { raw, filled };
     boxMeshes.push(mesh);
@@ -145,11 +152,16 @@ await Promise.all(meta.planes.map(async (p) => {
 }));
 
 // ---- camera state & controls ------------------------------------------------
-const box = meta.box;
+// The scene is a chain of boxes along -z. Keep the camera inside whichever
+// box it is in (step back up to 1 m in front of the first one).
+const boxes = meta.boxes;
+const last = boxes[boxes.length - 1];
+const zLimits = [last.z[1] + 0.5, 1.0];
+const boxAt = (z) => boxes.find((b) => z <= b.z[0] && z >= b.z[1]) || boxes[0];
 const limits = {
-  x: [box.x[0] + 0.1, box.x[1] - 0.1],
-  y: [box.y[0] + 0.3, box.y[1] - 0.1],
-  z: [box.z[1] + 0.5, 1.0], // forward is -z; allow stepping back 1 m
+  get x() { const b = boxAt(pose.z); return [b.x[0] + 0.1, b.x[1] - 0.1]; },
+  get y() { const b = boxAt(pose.z); return [b.y[0] + 0.3, b.y[1] - 0.1]; },
+  z: zLimits,
 };
 const pose = { x: 0, y: 0, z: 0, yaw: 0, pitch: 0 };
 const clamp = (v, [a, b]) => Math.min(b, Math.max(a, v));
@@ -228,7 +240,7 @@ canvas.addEventListener("pointerup", endDrag);
 canvas.addEventListener("pointercancel", endDrag);
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
-  pose.z = clamp(pose.z + e.deltaY * 0.004, limits.z);
+  pose.z = clamp(pose.z + e.deltaY * 0.004 * Math.max(1, -pose.z / 5), limits.z);
 }, { passive: false });
 
 const keys = new Set();
@@ -244,7 +256,7 @@ addEventListener("keydown", (e) => {
 addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
 
 function stepKeys(dt) {
-  const v = 1.2 * dt; // m/s
+  const v = 1.2 * dt * (keys.has("shift") ? 6 : 1); // m/s, Shift to run
   const d = (a, b) => (keys.has(a) ? 1 : 0) - (keys.has(b) ? 1 : 0);
   pose.x = clamp(pose.x + v * (d("d", "a") + d("arrowright", "arrowleft")), limits.x);
   pose.z = clamp(pose.z - v * (d("w", "s") + d("arrowup", "arrowdown")), limits.z);
@@ -260,10 +272,10 @@ addEventListener("resize", resize);
 resize();
 setButtons();
 
-let last = performance.now();
+let prev = performance.now();
 renderer.setAnimationLoop((now) => {
-  stepKeys(Math.min(0.05, (now - last) / 1000));
-  last = now;
+  stepKeys(Math.min(0.05, (now - prev) / 1000));
+  prev = now;
   applyPose();
   renderer.render(scene, camera);
 });
