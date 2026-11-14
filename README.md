@@ -12,6 +12,10 @@ The starting point is **Tour Into the Picture** (TIP; Horry, Anjyo & Arai, SIGGR
 
 Camera sweep with the simple fill: [`outputs/hallway/sweep.gif`](outputs/hallway/sweep.gif)
 
+**Rectified faces.** Each face of the room is perspective-corrected and unfolded at true scale, with holes (no photo data) in magenta. The bulletin board and door become clean rectangles, and the missing regions become simple strips along each face's near edge. That is the case for completing holes in this rectified space rather than in the photo (`python scripts/face_textures.py data/annotations/hallway.json`):
+
+<img src="outputs/hallway/faces_unfolded.jpg" width="820">
+
 ## Quick start
 
 ```bash
@@ -26,6 +30,7 @@ python -m http.server 8000
 
 # 3. Offline renders for figures (novel views, contact sheet, GIF)
 python scripts/render_views.py data/annotations/hallway.json
+python scripts/face_textures.py data/annotations/hallway.json   # rectified, unfolded faces with holes
 
 # Tests
 python tests/test_tip.py                 # geometry + rendering
@@ -101,7 +106,7 @@ Good photos have one-point perspective (looking straight down the room), visible
 ```
 tip/            library: annotations, geometry, textures (+ push-pull fill), renderer, export,
                 auto_annotate (VP + back wall detection), editor (interactive annotation)
-scripts/        annotate.py · show_annotation.py · build_scene.py · render_views.py
+scripts/        annotate.py · show_annotation.py · build_scene.py · render_views.py · face_textures.py
 viewer/         three.js interactive viewer (loads scenes/<name>/scene.json)
 data/images/    input photos
 data/annotations/  per-scene annotation JSON
