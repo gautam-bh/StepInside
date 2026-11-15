@@ -14,6 +14,8 @@ Works for one-point-perspective interiors (camera looking down the room).
    how consistently the image changes across each of the four rays (from
    its corner outward), plus edge strength along the rectangle's own sides.
    Running sums make the exhaustive 4D search cheap.
+   The VP is then sharpened by tracking the four room edges out from the
+   back-wall corners and intersecting straight lines RANSAC-fit to them.
 3. Deeper boxes (find_deeper_boxes). Dynamic programming over where each
    box ends, with no fixed spacing. A box gains the edge evidence along its
    four floor/ceiling/wall junctions (over the exact stretch where they'd
@@ -452,19 +454,53 @@ def _rect_score(gx, gy, vp, rect, bound=None):
     return s
 
 
-def fit_edge_line(gx, gy, corner, theta0, span_deg: float = 6.0, n: int = 96):
-    """Best line through `corner` within +-span_deg of direction theta0
-    (pointing away from the VP), by mean edge strength across the line out
-    to the image border. Returns the refined angle."""
+@dataclass
+class EdgeLine:
+    point: np.ndarray  # a point on the fitted line
+    theta: float  # direction angle (image coords)
+    inliers: float  # fraction of tracked samples within `tol` of the line
+    span: float  # length covered by the inliers, px
+
+
+def track_edge_line(gx, gy, corner, vp, search: float = 8.0, tol: float = 0.75, iters: int = 400, seed: int = 0):
+    """Follow the room edge leaving `corner` (away from the VP) to the image
+    border and fit a straight line to it.
+
+    At every pixel step along the ray we take the strongest edge across it
+    (within +-search px), then RANSAC a line through those samples, so clutter
+    on the edge (an extinguisher on the floor line, a cable tray on the
+    ceiling line) is ignored. Returns None if no clear edge is found.
+    """
     h, w = gx.shape
-    thetas = theta0 + np.radians(np.linspace(-span_deg, span_deg, 121))
-    ux, uy = np.cos(thetas), np.sin(thetas)
-    L = _ray_length(corner, ux, uy, w, h)
-    t = np.linspace(0, 1, n)[None, :] * L[:, None]
-    x, y = corner[0] + t * ux[:, None], corner[1] + t * uy[:, None]
-    nx, ny = -uy[:, None], ux[:, None]
-    g = np.abs(_sample(gx, x, y) * nx + _sample(gy, x, y) * ny)
-    return float(thetas[np.argmax(np.median(g, axis=1))])
+    c = np.asarray(corner, float)
+    d = c - np.asarray(vp, float)
+    d /= np.linalg.norm(d) + 1e-9
+    n = np.array([-d[1], d[0]])
+    L = float(_ray_length(c, d[0:1], d[1:2], w, h, bound=(search + 2, search + 2, w - search - 3, h - search - 3))[0])
+    if not L > 20:
+        return None
+    t = np.arange(2.0, L)
+    offs = np.arange(-search, search + 0.01, 0.25)
+    P = c + t[:, None, None] * d + offs[None, :, None] * n
+    g = np.abs(_sample(gx, P[..., 0], P[..., 1]) * n[0] + _sample(gy, P[..., 0], P[..., 1]) * n[1])
+    q = c + t[:, None] * d + offs[np.argmax(g, axis=1)][:, None] * n
+    rng = np.random.default_rng(seed)
+    best = None
+    for _ in range(iters):
+        i, j = rng.choice(len(q), 2, replace=False)
+        dd = q[j] - q[i]
+        nd = np.linalg.norm(dd)
+        if nd < 0.25 * L:
+            continue
+        k = np.abs((q - q[i]) @ np.array([-dd[1], dd[0]]) / nd) < tol
+        if best is None or k.sum() > best.sum():
+            best = k
+    if best is None or best.sum() < max(10, 0.15 * len(q)):
+        return None
+    m = q[best].mean(axis=0)
+    _, _, vt = np.linalg.svd(q[best] - m)
+    span = float(np.ptp((q[best] - m) @ vt[0]))
+    return EdgeLine(m, float(np.arctan2(vt[0][1], vt[0][0])), float(best.mean()), span)
 
 
 def intersect_lines(points, thetas):
@@ -479,18 +515,18 @@ def intersect_lines(points, thetas):
 
 
 def refine_vp_from_corners(gx, gy, vp, rect):
-    """Fit the four room-edge lines through the back-wall corners and return
-    their intersection, a sharper VP than edge voting."""
+    """Track the four room-edge lines leaving the back-wall corners, fit a
+    straight line to each, and return their least-squares intersection (a
+    sharper VP than edge voting) along with the fitted lines."""
     x1, y1, x2, y2 = rect
     corners = {"bl": (x1, y2), "br": (x2, y2), "tl": (x1, y1), "tr": (x2, y1)}
-    pts, ths = [], []
-    for c in corners.values():
-        th0 = np.arctan2(c[1] - vp[1], c[0] - vp[0])
-        pts.append(c)
-        ths.append(fit_edge_line(gx, gy, c, th0))
-    new = intersect_lines(pts, ths)
+    lines = {k: track_edge_line(gx, gy, c, vp) for k, c in corners.items()}
+    good = [ln for ln in lines.values() if ln is not None]
+    if len(good) < 2:
+        return tuple(vp), lines
+    new = intersect_lines([ln.point for ln in good], [ln.theta for ln in good])
     # Keep the VP inside the back wall.
-    return (float(np.clip(new[0], x1 + 2, x2 - 2)), float(np.clip(new[1], y1 + 2, y2 - 2)))
+    return (float(np.clip(new[0], x1 + 2, x2 - 2)), float(np.clip(new[1], y1 + 2, y2 - 2))), lines
 
 
 def rays_from_rect(vp, rect) -> dict:
@@ -529,7 +565,7 @@ def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, d
                 if best is None or score > best[2]:
                     best = (cand, bw, score)
     vp, bw, _ = best
-    vp = refine_vp_from_corners(gx, gy, vp, bw)
+    vp, _ = refine_vp_from_corners(gx, gy, vp, bw)
     rays = rays_from_rect(vp, bw)
     segs, seg_scores = (find_deeper_boxes(gx, gy, vp, bw) if deeper else ([], []))
     inv = 1.0 / s

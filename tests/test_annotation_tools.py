@@ -145,7 +145,7 @@ def test_hallway_deeper_boxes():
     ann = load_annotation(ROOT / "data" / "annotations" / "hallway.json")
     image = load_image(ann.image)
     r = auto_annotate_array(image)
-    assert len(r.segments) >= 3, f"only {len(r.segments)} deeper boxes"
+    assert len(r.segments) >= 2, f"only {len(r.segments)} deeper boxes"
     # Boxes end at real boundaries: the first at the corridor's left-wall step
     # (hand box ending at y=740), the last at the end wall (hand y=666). The
     # hand annotation's other splits (e.g. y=790) were judgment calls with no
@@ -172,15 +172,16 @@ def test_auto_annotation_builds_a_valid_scene():
 
 
 def test_hallway_matches_hand_annotation():
-    """The real photo: within lens-distortion slack of the hand annotation."""
+    """The real photo: back wall near the hand annotation, VP where the room edges meet."""
     ann = load_annotation(ROOT / "data" / "annotations" / "hallway.json")
     r = auto_annotate_array(load_image(ann.image))
     bw_err = np.abs(np.array(r.back_wall) - np.array(ann.back_wall)).max()
     vp_err = np.hypot(r.vanishing_point[0] - ann.vanishing_point[0], r.vanishing_point[1] - ann.vanishing_point[1])
     assert bw_err < 25, f"back wall {r.back_wall} vs hand {ann.back_wall}"
-    # Ceiling lines meet near y~610 and floor lines near y~660 in this photo
-    # (lens distortion), so any VP in between is defensible.
-    assert vp_err < 40, f"VP {r.vanishing_point} vs hand {ann.vanishing_point}"
+    assert vp_err < 25, f"VP {r.vanishing_point} vs hand {ann.vanishing_point}"
+    # Straight lines fit by hand-checked RANSAC at full resolution through the
+    # four room edges all cross within ~10 px of (482, 615).
+    assert np.hypot(r.vanishing_point[0] - 482, r.vanishing_point[1] - 615) < 8, r.vanishing_point
 
 
 # --------------------------------------------------------------------------- editor

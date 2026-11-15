@@ -6,7 +6,7 @@ The starting point is **Tour Into the Picture** (TIP; Horry, Anjyo & Arai, SIGGR
 
 **Status:** TIP baseline working on the hallway scene: a chain of 7 boxes runs from the camera through the doorway to the corridor's end wall. Holes are shown, and a simple push-pull fill is available. Automatic annotation detects the vanishing point, the back wall and the deeper boxes down the corridor, and an interactive editor lets you adjust the result. Diffusion completion is not started.
 
-| Hand annotation (7 boxes) | Automatic annotation (4 boxes) | Novel views (top: holes in magenta, bottom: push-pull fill) |
+| Hand annotation (7 boxes) | Automatic annotation (3 boxes) | Novel views (top: holes in magenta, bottom: push-pull fill) |
 |---|---|---|
 | <img src="outputs/hallway/annotation.jpg" width="200"> | <img src="outputs/hallway/auto_annotation.jpg" width="200"> | <img src="outputs/hallway/contact_sheet.jpg" width="560"> |
 
@@ -63,7 +63,7 @@ python scripts/build_scene.py data/annotations/my_room.json
 **How detection works:**
 1. **Vanishing point:** edge pixels vote. Each strong edge pixel defines a line along its edge direction, and the VP is the point most of those lines pass through (coarse grid, then refined). Near horizontal and vertical edges are ignored, since they don't converge in one-point perspective.
 2. **Back wall:** an exhaustive search over rectangles around the VP. A rectangle's four corners fix the four room-edge rays (floor/wall and ceiling/wall junctions). Each rectangle is scored by how consistently the image changes across those rays, from each corner out to the border, plus edge strength along its own sides. Running sums keep the 4D search fast.
-3. **VP refinement:** the VP is searched jointly with the rectangle. Then the four room-edge lines are fitted through the corners, and the VP becomes their least-squares intersection.
+3. **VP refinement:** the VP is searched jointly with the rectangle. Then each of the four room edges is tracked outward from its back-wall corner (strongest edge across the ray at every pixel), a straight line is RANSAC-fit to the track so clutter like the extinguishers is ignored, and the VP becomes the lines' least-squares intersection.
 4. **Deeper boxes, by dynamic programming over where each box ends** (no fixed spacing). A box ending at depth Z_k starts at the previous box's depth Z_{k-1}, so its four floor/ceiling/wall edges run from its far corner out to Z_k/Z_{k-1} times as far from the VP. Its gain is:
    - the edge evidence summed along those four segments,
    - plus the edges of its end rectangle,
@@ -77,7 +77,7 @@ python scripts/build_scene.py data/annotations/my_room.json
 
    Running sums along every corner's ray make each candidate box one lookup, so the whole search takes about 2 s.
 
-On synthetic rooms with known geometry, the VP is within about 5 px and the back wall within 4 px. On two synthetic corridors, one with even 1.5× steps and one with uneven 1.1× and 2.5× steps, the deeper boxes are within about 5 px. The earlier fixed-1.5×-step version misplaced the uneven case's first box by 45 px and added two fake boxes. On the hallway, the back wall is within 12 px of the hand annotation. Detection finds 3 boxes down the corridor: at the left-wall step (y = 748 vs. 740 by hand), just past it, and at the end wall (664 vs. 666). It doesn't split where I did by hand at y = 790, since there's no strong edge there. The VP comes out at y ≈ 602 vs. 628 by hand: in this photo the ceiling lines meet near y ≈ 610 and the floor lines near y ≈ 660 (lens distortion), so neither value is exact. Foreground objects are still outlined by hand in the editor.
+On synthetic rooms with known geometry, the VP is within about 5 px and the back wall within 4 px. On two synthetic corridors, one with even 1.5× steps and one with uneven 1.1× and 2.5× steps, the deeper boxes are within about 5 px. The earlier fixed-1.5×-step version misplaced the uneven case's first box by 45 px and added two fake boxes. On the hallway, the back wall is within 12 px of the hand annotation. Detection finds 2 boxes down the corridor: at the left-wall step (y = 736 vs. 740 by hand) and at the end wall (658 vs. 666). It doesn't split where I did by hand at y = 790, since there's no strong edge there. The VP comes out at (480, 615), where straight lines fit to the four room edges cross (they all meet within about 10 px). My hand-placed VP (492, 628) is about 15 px off. Foreground objects are still outlined by hand in the editor.
 
 You can also write the annotation JSON by hand (see [`data/annotations/hallway.json`](data/annotations/hallway.json)):
 
@@ -130,7 +130,7 @@ tests/          test_tip.py (geometry/rendering) · test_annotation_tools.py (de
 ## Known limitations
 
 - Assumes one-point perspective and box-shaped segments. Alcoves and side doors are flattened onto the walls.
-- With a single camera model, lens distortion can't be fully matched: this photo's ceiling lines and floor lines meet about 50 px apart vertically.
+- No lens-distortion correction. On the hallway the room edges are straight to within about 1–2 px (iPhones correct distortion in-camera). Also, radial distortion leaves lines through the image center straight, and TIP's room edges all run through the VP near the center. So even a 15% barrel distortion moves the detected VP by only about 2 px (tested on synthetic rooms). Distortion would only slightly warp wall textures near the photo borders. It would matter for fisheye/GoPro-style lenses or VPs far off-center.
 - Foreground objects are flat cutouts. Big sideways moves reveal that they're cards.
 - The photo has no data close to the camera along the side walls, so even a small sideways step reveals large holes there (see the left/right views).
 - The focal length is an assumption (26 mm equivalent), not calibrated.
