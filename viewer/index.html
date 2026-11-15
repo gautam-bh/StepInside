@@ -119,10 +119,18 @@ function quad(corners) {
 }
 
 const boxMeshes = [], fgMeshes = [], edgeLines = [];
+function lathe(p) {
+  // Surface of revolution; uv (i / segments, j / (points - 1)) matches the texture.
+  const pts = p.profile.map(([r, y]) => new THREE.Vector2(r, y));
+  const g = new THREE.LatheGeometry(pts, 64);
+  g.translate(p.axis[0], 0, p.axis[1]);
+  return g;
+}
+
 await Promise.all(meta.planes.map(async (p) => {
-  const geo = quad(p.corners);
+  const geo = p.kind === "lathe" ? lathe(p) : quad(p.corners);
   const raw = await loadTex(p.texture);
-  if (p.kind === "box") {
+  if (p.kind === "box" || p.kind === "lathe") {
     const filled = await loadTex(p.texture_filled);
     const mat = new THREE.MeshBasicMaterial({ map: raw, side: THREE.DoubleSide });
     // Paint holes (alpha < 0.5) solid magenta instead of seeing through them,
@@ -135,7 +143,7 @@ await Promise.all(meta.planes.map(async (p) => {
     mesh.userData = { raw, filled };
     boxMeshes.push(mesh);
     scene.add(mesh);
-    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo),
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, p.kind === "lathe" ? 30 : 1),
       new THREE.LineBasicMaterial({ color: 0x00e5ff }));
     edges.visible = false;
     edgeLines.push(edges);

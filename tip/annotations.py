@@ -42,6 +42,23 @@ class RoomObject:
 
 
 @dataclass
+class Solid:
+    """A surface of revolution with a vertical axis: vase, bin, lamp,
+    extinguisher, hydrant. Found automatically by tip.revolve.
+
+    profile: [[y, x_left, x_right], ...] its silhouette, one entry per image
+        row, top to bottom.
+    mount: "floor" if it stands on the floor (its lowest row gives its
+        depth) or "wall" if it hangs against the side wall behind it (the
+        wall fixes its depth).
+    """
+
+    name: str
+    profile: list[list[float]]
+    mount: str = "floor"
+
+
+@dataclass
 class Annotation:
     image: str
     vanishing_point: tuple[float, float]
@@ -57,6 +74,8 @@ class Annotation:
     segments: list[list[float]] = field(default_factory=list)
     # Room-aligned 3D boxes standing on the floor.
     objects: list[RoomObject] = field(default_factory=list)
+    # Surfaces of revolution (vertical axis).
+    solids: list[Solid] = field(default_factory=list)
 
     def focal_px(self, width: int, height: int) -> float:
         """Focal length in pixels (35mm frame long side = 36mm)."""
@@ -68,7 +87,8 @@ def load_annotation(path: str | Path) -> Annotation:
     raw = json.loads(path.read_text())
     fgs = [Foreground(**f) for f in raw.pop("foreground", [])]
     objs = [RoomObject(**o) for o in raw.pop("objects", [])]
-    ann = Annotation(**raw, foreground=fgs, objects=objs)
+    sols = [Solid(**o) for o in raw.pop("solids", [])]
+    ann = Annotation(**raw, foreground=fgs, objects=objs, solids=sols)
     ann.vanishing_point = tuple(ann.vanishing_point)
     ann.back_wall = tuple(ann.back_wall)
     # Resolve the image path relative to the repo root (annotation's grandparent).
@@ -89,6 +109,8 @@ def save_annotation(ann: Annotation, path: str | Path) -> None:
         "camera_height": ann.camera_height,
         "segments": [list(r) for r in ann.segments],
         "objects": [{"name": o.name, "front": list(o.front), "back_y": o.back_y} for o in ann.objects],
+        "solids": [{"name": o.name, "mount": o.mount, "profile": [[round(float(v), 1) for v in r] for r in o.profile]}
+                   for o in ann.solids],
         "foreground": [
             {k: v for k, v in f.__dict__.items() if v is not None} for f in ann.foreground
         ],

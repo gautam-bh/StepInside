@@ -115,9 +115,16 @@ Good photos have one-point perspective (looking straight down the room), visible
 2. **Boxes.** The back-wall rectangle is placed at depth `D`, chosen so the floor sits `camera_height` below the camera. Floor, ceiling and side walls run from the back wall toward the camera, out to where they leave the image ([`tip/geometry.py`](tip/geometry.py)). Each extra `segments` box continues behind the previous one. Its depth comes from its rectangle's bottom edge on the floor, and the previous back wall is split into bands around the opening, so the hallway becomes 7 boxes: room → door frame → 5 corridor stretches → end wall, about 49 m away.
 3. **Textures.** For every texel on every plane, we find its 3D point, project it into the photo and sample bilinearly (inverse mapping, so there are no gaps). This removes the perspective distortion: each wall and floor becomes a flat, front-on image, which is where completion will happen. Texels that fall outside the photo, inside a foreground object, or where another plane hides this one in the photo (found with a plane-ID buffer from the input camera) get `alpha = 0`; these are the holes ([`tip/textures.py`](tip/textures.py)).
 4. **Objects.** Each room-aligned object becomes a small box (front, sides, top, back) from its floor contact rows. Its faces are ordinary textured planes, so it hides what's behind it in the photo (those texels become holes) and moves with correct parallax.
-5. **Foreground.** Each outlined object becomes a billboard parallel to the image plane. Its depth comes from where its bottom meets the floor. Like classic TIP, billboards draw on top of the box.
-6. **Rendering.** [`viewer/index.html`](viewer/index.html) uses three.js, with `setViewOffset` to reproduce the off-center principal point. [`tip/render.py`](tip/render.py) is a NumPy ray-caster that produces the same views for figures and tests. From the original camera it reproduces the input photo (checked in `tests/test_tip.py`).
-7. **Simple fill baseline.** `push_pull_fill` fills holes from a weighted image pyramid. It gives smooth color with no texture or line continuation, the "simple filling" baseline from the proposal.
+5. **Solids (in progress).** Surfaces of revolution with a vertical axis (vases, bins, extinguishers) are a `solids` entry: a symmetric silhouette, one row per image row. A circle of radius r whose axis lies at horizontal distance D, in direction β, is seen between the rays at β ± α with sin α = r/D. So every silhouette row gives a radius once D is known. D comes from the floor (the lowest point is the near edge of the base) or from the side wall the object hangs on (its outer edge touches the wall). The solid becomes a lathe mesh (`Lathe` in [`tip/geometry.py`](tip/geometry.py); three.js `LatheGeometry` in the viewer). Its front is textured from the photo, and its unseen back is the front mirrored through the silhouette plane. The automatic detector ([`tip/revolve.py`](tip/revolve.py)) is fully classical:
+   - mirrored colour-gradient edge pairs vote for vertical symmetry axes;
+   - a GrabCut-style loop traces each silhouette, alternating colour-mixture fits with a symmetric-profile Viterbi in place of the graph cut;
+   - room-geometry checks: floor or wall mount, plausible real size, fit inside the room, both sides ending together;
+   - a rival-hypothesis test: the top and bottom outline must match the projected rim ellipses better than the straight edges of a flat rectangle (horizontal, or receding to the VP).
+
+   On synthetic rooms it finds a floor vase and a wall-hung cylinder to within a few cm, with no false positives from doors, posters or furniture. On the hallway photo it is not reliable yet: labels, straps and the hose break up the extinguishers' outlines, and the poster board and door frames produce false positives. So it is not part of `auto_annotate` yet.
+6. **Foreground.** Each outlined object becomes a billboard parallel to the image plane. Its depth comes from where its bottom meets the floor. Like classic TIP, billboards draw on top of the box.
+7. **Rendering.** [`viewer/index.html`](viewer/index.html) uses three.js, with `setViewOffset` to reproduce the off-center principal point. [`tip/render.py`](tip/render.py) is a NumPy ray-caster that produces the same views for figures and tests. From the original camera it reproduces the input photo (checked in `tests/test_tip.py`).
+8. **Simple fill baseline.** `push_pull_fill` fills holes from a weighted image pyramid. It gives smooth color with no texture or line continuation, the "simple filling" baseline from the proposal.
 
 ### Hallway scene numbers
 
@@ -135,7 +142,8 @@ Good photos have one-point perspective (looking straight down the room), visible
 
 ```
 tip/            library: annotations, geometry, textures (+ push-pull fill), renderer, export,
-                auto_annotate (VP, back wall, deeper boxes, objects), editor (interactive annotation)
+                auto_annotate (VP, back wall, deeper boxes, objects), revolve (solids: surfaces of
+                revolution, WIP), editor (interactive annotation)
 scripts/        annotate.py · show_annotation.py · build_scene.py · render_views.py · face_textures.py
                 synthetic_demo.py (furnished test room with known geometry)
 viewer/         three.js interactive viewer (loads scenes/<name>/scene.json)
@@ -158,6 +166,7 @@ tests/          test_tip.py (geometry/rendering) · test_annotation_tools.py (de
 
 ## Next steps
 
+- [ ] Solids on real photos: a cleaner silhouette tracer (OpenCV GrabCut, or SAM only for tracing a proposed shape), then wire `find_solids` into `auto_annotate`
 - [ ] Diffusion inpainting on the rectified plane textures vs. on the original photo (the main experiment)
 - [ ] Photograph about 6 scenes, plus held-out nearby views for evaluation
 - [ ] Hole/seam/line-continuity comparison: unfilled vs. push-pull vs. diffusion

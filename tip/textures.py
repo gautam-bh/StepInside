@@ -79,7 +79,7 @@ def visible_plane_ids(scene: Scene) -> np.ndarray:
     best_t = np.full(u.shape, np.inf)
     ids = np.full(u.shape, -1, dtype=np.int32)
     for i, plane in enumerate(scene.planes):
-        if plane.kind != "box":
+        if plane.kind not in ("box", "lathe"):
             continue
         t, _, _, valid = _hit(plane, cam, dirs)
         closer = valid & (t < best_t)
@@ -110,8 +110,28 @@ def box_texture(plane: Plane, scene: Scene, image: np.ndarray, fg_mask: np.ndarr
         for yy, xx in ((y0, x0), (y0, x1), (y1, x0), (y1, x1)):
             own |= plane_ids[yy, xx] == plane_index
         valid &= own
+    if hasattr(plane, "normal"):  # a solid: only the side facing the camera
+        valid &= (plane.normal(S, T) * -plane.point(S, T)).sum(-1) > 0
     alpha = valid.astype(np.float32)[..., None]
-    return np.concatenate([rgb * alpha, alpha], axis=-1).astype(np.float32)
+    out = np.concatenate([rgb * alpha, alpha], axis=-1).astype(np.float32)
+    if hasattr(plane, "normal"):
+        out = mirror_fill(out, plane)
+    return out
+
+
+def mirror_fill(rgba: np.ndarray, lathe) -> np.ndarray:
+    """Fill the hidden back of a solid from its front, mirrored through the
+    plane that holds its axis and faces the camera (the plane of its
+    silhouette). The camera sees the axis in direction beta, so the facing
+    side is centred on phi = -beta and the mirror image of phi is
+    pi - 2*beta - phi."""
+    rows, cols = rgba.shape[:2]
+    beta = np.arctan2(lathe.ax, lathe.az)
+    phi = 2 * np.pi * (np.arange(cols) + 0.5) / cols
+    src = np.floor(((np.pi - 2 * beta - phi) % (2 * np.pi)) / (2 * np.pi) * cols).astype(int) % cols
+    mirrored = rgba[:, src]
+    take = (rgba[..., 3:4] < 0.5) & (mirrored[..., 3:4] > 0.5)
+    return np.where(take, mirrored, rgba)
 
 
 def foreground_texture(polygon, image: np.ndarray) -> np.ndarray:
@@ -174,7 +194,7 @@ def extract_textures(scene: Scene, image: np.ndarray, foreground_polys, max_res:
     fg_iter = iter(foreground_polys)
     ids = visible_plane_ids(scene)
     for i, plane in enumerate(scene.planes):
-        if plane.kind == "box":
+        if plane.kind in ("box", "lathe"):
             textures[plane.name] = box_texture(plane, scene, image, fg_mask, max_res, ids, i)
         else:
             textures[plane.name] = foreground_texture(next(fg_iter), image)

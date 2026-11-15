@@ -28,12 +28,14 @@ from tip.auto_annotate import (  # noqa: E402
     to_gray,
 )
 from tip.editor import AnnotationEditor  # noqa: E402
+from tip.geometry import Lathe, solid_surface  # noqa: E402
 from tip.render import render_view  # noqa: E402
+from tip.revolve import find_solids  # noqa: E402
 from tip.textures import extract_textures, load_image  # noqa: E402
 
 
 # --------------------------------------------------------------------------- synthetic rooms
-def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=(), objects=(), decor=False):
+def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=(), objects=(), decor=False, solids=()):
     """Render a box room with plain-coloured, slightly noisy surfaces and a
     tiled floor, with known VP and back wall.
 
@@ -42,16 +44,28 @@ def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=(), objects=
 
     objects: RoomObjects (dark boxes, with drawer lines on the front).
     decor: add a poster on the back wall and a door on the left wall:
-    rectangles that are *not* room-aligned objects."""
+    rectangles that are *not* room-aligned objects.
+    solids: (Lathe, rgb) surfaces of revolution, shaded darker away from the
+    camera so they look round."""
     w, h = size
     ann = Annotation(image="synthetic", vanishing_point=vp, back_wall=back_wall, segments=[list(r) for r in segments],
                      objects=list(objects))
     scene = build_scene(ann, w, h)
+    scene.planes += [lathe for lathe, _ in solids]
+    colors = {lathe.name: rgb for lathe, rgb in solids}
     rng = np.random.default_rng(seed)
     shade = {"floor": 0.55, "ceiling": 0.22, "left": 0.85, "right": 0.75, "back": 0.66}
     obj_shade = {"front": 0.32, "left": 0.2, "right": 0.2, "top": 0.42, "back": 0.3}  # dark wood
     tex = {}
     for p in scene.planes:
+        if p.name in colors:
+            n = 256
+            phi = 2 * np.pi * (np.arange(n) + 0.5) / n
+            t = np.ones((n, n, 3), np.float32) * np.asarray(colors[p.name], np.float32)
+            t *= (0.75 + 0.25 * np.cos(phi))[None, :, None]
+            t += rng.normal(0, 0.005, t.shape).astype(np.float32)
+            tex[p.name] = np.concatenate([np.clip(t, 0, 1), np.ones((n, n, 1), np.float32)], axis=-1)
+            continue
         if p.name.startswith("o_"):  # o_<name>_<face>
             kind = "object"
             base = obj_shade[p.name.rsplit("_", 1)[1]]
@@ -262,6 +276,74 @@ def test_room_objects_hide_the_walls_behind_them():
     assert np.abs(rgb - img).mean() < 0.01 and hole.mean() < 0.01
     _, hole2 = render_view(scene, tex, position=(0.4, 0, 0), scale=0.5)
     assert hole2.mean() > 0.02
+
+
+# --------------------------------------------------------------------------- solids
+def _lathe(name, ax, az, y_bottom, height, radius):
+    t = np.linspace(0, 1, len(radius))
+    ys = y_bottom + height * t
+    return Lathe(name, ax, az, np.concatenate([[0.0], radius, [0.0]]), np.concatenate([[ys[0]], ys, [ys[-1]]]))
+
+
+def _solid_room():
+    """CASES[0] with a blue vase on the floor and a red cylinder (domed top)
+    hanging 0.5 m up on the right wall, 3 cm off it."""
+    vp, bw = CASES[0]
+    scene = build_scene(Annotation(image="s", vanishing_point=vp, back_wall=bw), 600, 800)
+    t = np.linspace(0, 1, 24)
+    vase = _lathe("vase", -0.4, 4.0, scene.yf, 0.6, 0.12 + 0.08 * np.sin(1.2 * np.pi * t) - 0.07 * t ** 2)
+    can = _lathe("can", scene.xr - 0.12, 3.2, scene.yf + 0.5, 0.5, np.r_[np.full(21, 0.09), 0.08, 0.06, 0.03])
+    solids = [(vase, (0.15, 0.3, 0.7)), (can, (0.75, 0.12, 0.1))]
+    return vp, bw, scene, solids
+
+
+def test_solids_detected():
+    """Surfaces of revolution are found and lifted to 3D: floor vs wall mount,
+    axis position, size and height."""
+    vp, bw, scene, solids = _solid_room()
+    img = synthetic_room(vp, bw, solids=solids)
+    found = find_solids(img, scene)
+    assert len(found) == 2, [(s.name, s.mount) for s in found]
+    for (truth, _), mount in zip(solids, ("floor", "wall")):
+        est = min((solid_surface(s, scene) for s in found), key=lambda L: np.hypot(L.ax - truth.ax, L.az - truth.az))
+        sol = next(s for s in found if f"r_{s.name}" == est.name)
+        assert sol.mount == mount, (truth.name, sol.mount)
+        # The wall-mounted one is assumed to touch the wall (it is 3 cm off).
+        tol = 0.05 if mount == "floor" else 0.1
+        assert np.hypot(est.ax - truth.ax, est.az - truth.az) < tol, (truth.name, est.ax, est.az)
+        assert abs(est.radius.max() - truth.radius.max()) < 0.02, (truth.name, est.radius.max())
+        assert abs(est.ys.max() - truth.ys.max()) < 0.06 and abs(est.ys.min() - truth.ys.min()) < 0.06
+
+
+def test_no_solids_in_empty_rooms():
+    """Room edges, the back wall, posters, doors and boxy furniture are not solids."""
+    for vp, bw in CASES:
+        img = synthetic_room(vp, bw, decor=True)
+        scene = build_scene(Annotation(image="s", vanishing_point=vp, back_wall=bw), 600, 800)
+        assert find_solids(img, scene) == []
+    (vp, bw), objs = FURNISHED[0]
+    img = synthetic_room(vp, bw, objects=objs, decor=True)
+    scene = build_scene(Annotation(image="s", vanishing_point=vp, back_wall=bw), 600, 800)
+    assert find_solids(img, scene) == []
+
+
+def test_solids_are_round_3d_surfaces():
+    """A detected solid reproduces the photo from the input camera, hides the
+    floor behind it (holes), and its unseen back is filled by mirroring."""
+    vp, bw, scene0, solids = _solid_room()
+    img = synthetic_room(vp, bw, solids=solids)
+    ann = Annotation(image="s", vanishing_point=vp, back_wall=bw, solids=find_solids(img, scene0))
+    scene = build_scene(ann, 600, 800)
+    tex = extract_textures(scene, img, [])
+    rgb, hole = render_view(scene, tex)
+    assert np.abs(rgb - img).mean() < 0.01 and hole.mean() < 0.01
+    for p in scene.planes:
+        if p.kind == "lathe":
+            # Front from the photo plus its mirror image: nearly all of it.
+            assert (tex[p.name][..., 3] > 0.5).mean() > 0.85, p.name
+    # Seen from the side, the floor behind the vase is a hole.
+    _, hole2 = render_view(scene, tex, position=(-0.6, 0, 2.0), yaw=20, scale=0.5)
+    assert hole2.mean() > 0.005
 
 
 # --------------------------------------------------------------------------- editor

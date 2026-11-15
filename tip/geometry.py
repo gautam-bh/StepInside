@@ -20,6 +20,14 @@ Room-aligned objects (annotation `objects`) are small axis-aligned boxes
 standing on the floor: front, two sides, top and back. Their faces are
 ordinary box planes, so they hide the walls behind them (those texels become
 holes) and get parallax for free.
+
+Solids (annotation `solids`) are surfaces of revolution about a vertical
+axis, rebuilt from their image silhouette. A circle of radius r whose axis is
+a horizontal distance D from the camera, in direction beta, is seen between
+the two rays at beta +- alpha with sin(alpha) = r / D. So each silhouette row
+gives alpha, and the radius follows once D is known. D comes from the floor
+(the lowest silhouette point is the near edge of the base circle) or from the
+side wall the object hangs on (its outer edge touches the wall).
 """
 
 from __future__ import annotations
@@ -28,7 +36,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .annotations import Annotation, Foreground, RoomObject
+from .annotations import Annotation, Foreground, RoomObject, Solid
 
 
 @dataclass
@@ -62,6 +70,109 @@ class Plane:
         """Index of the coordinate axis the plane is perpendicular to."""
         n = np.cross(self.u_axis, self.v_axis)
         return int(np.argmax(np.abs(n)))
+
+
+@dataclass
+class Lathe:
+    """A surface of revolution about the vertical line X = ax, Z = az.
+
+    Profile points (radius, Y) run bottom to top and start and end at radius
+    0, so the caps are part of the surface. Texture coordinates match
+    three.js's LatheGeometry: s = phi / 2pi around the axis (phi = 0 faces
+    the input camera's side, -Z) and t from the top profile point (t = 0) to
+    the bottom one (t = 1), linear in profile index.
+    """
+
+    name: str
+    ax: float
+    az: float
+    radius: np.ndarray  # (n,)
+    ys: np.ndarray  # (n,) non-decreasing
+    kind: str = "lathe"
+    segment: int = 0
+
+    def _profile(self, t):
+        n = len(self.ys)
+        k = np.clip((1 - np.asarray(t, float)) * (n - 1), 0, n - 1)
+        j = np.minimum(np.floor(k).astype(int), n - 2)
+        a = k - j
+        r = self.radius[j] * (1 - a) + self.radius[j + 1] * a
+        y = self.ys[j] * (1 - a) + self.ys[j + 1] * a
+        return r, y, j
+
+    def point(self, s, t):
+        phi = 2 * np.pi * np.asarray(s, float)
+        r, y, _ = self._profile(t)
+        phi, r, y = np.broadcast_arrays(phi, r, y)
+        return np.stack([self.ax + r * np.sin(phi), y, self.az - r * np.cos(phi)], axis=-1)
+
+    def normal(self, s, t):
+        """Outward surface normal (not normalised)."""
+        phi = 2 * np.pi * np.asarray(s, float)
+        _, _, j = self._profile(t)
+        dr = self.radius[j + 1] - self.radius[j]
+        dy = self.ys[j + 1] - self.ys[j]
+        phi, dr, dy = np.broadcast_arrays(phi, dr, dy)
+        # Profile tangent (dr, dy) turned outward: (dy, -dr) in (radial, Y).
+        return np.stack([dy * np.sin(phi), -dr, -dy * np.cos(phi)], axis=-1)
+
+    def hit(self, cam: np.ndarray, dirs: np.ndarray):
+        """Ray/surface intersection, like render._hit: (t, s, tt, valid)."""
+        shape = dirs.shape[:-1]
+        d = dirs.reshape(-1, 3)
+        ox, oy, oz = cam[0] - self.ax, cam[1], cam[2] - self.az
+        best = np.full(len(d), np.inf)
+        frac = np.zeros(len(d))
+        # Bounding cylinder test first: most rays miss.
+        rmax = float(self.radius.max())
+        a2 = d[:, 0] ** 2 + d[:, 2] ** 2
+        b2 = ox * d[:, 0] + oz * d[:, 2]
+        c2 = ox * ox + oz * oz - rmax * rmax
+        near = (b2 * b2 - a2 * c2 >= 0) | (c2 <= 0)
+        idx = np.nonzero(near)[0]
+        if len(idx):
+            dx, dy, dz = d[idx, 0], d[idx, 1], d[idx, 2]
+            bt = best[idx]
+            bf = frac[idx]
+            n = len(self.ys)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                for j in range(n - 1):
+                    y0, y1 = self.ys[j], self.ys[j + 1]
+                    r0, r1 = self.radius[j], self.radius[j + 1]
+                    if abs(y1 - y0) < 1e-9:  # flat ring (a cap): plane Y = y0
+                        t = (y0 - oy) / dy
+                        rr = np.hypot(ox + t * dx, oz + t * dz)
+                        lo, hi = min(r0, r1), max(r0, r1)
+                        ok = np.isfinite(t) & (t > 1e-6) & (rr >= lo - 1e-9) & (rr <= hi + 1e-9) & (t < bt)
+                        a = np.where(abs(r1 - r0) > 1e-12, (rr - r0) / (r1 - r0 + 1e-300), 0.0)
+                        bt = np.where(ok, t, bt)
+                        bf = np.where(ok, j + a, bf)
+                        continue
+                    # r(Y) = r0 + m (Y - y0); solve x^2 + z^2 = r(Y)^2 along the ray.
+                    m = (r1 - r0) / (y1 - y0)
+                    q0 = r0 + m * (oy - y0)
+                    qa = dx * dx + dz * dz - (m * dy) ** 2
+                    qb = 2 * (ox * dx + oz * dz - q0 * m * dy)
+                    qc = ox * ox + oz * oz - q0 * q0
+                    disc = qb * qb - 4 * qa * qc
+                    sq = np.sqrt(np.maximum(disc, 0))
+                    for sign in (-1.0, 1.0):
+                        t = (-qb + sign * sq) / (2 * qa)
+                        y = oy + t * dy
+                        ok = (disc >= 0) & np.isfinite(t) & (t > 1e-6) & (y >= y0 - 1e-9) & (y <= y1 + 1e-9) & (t < bt)
+                        ok &= (q0 + m * t * dy) >= -1e-9  # the real cone, not its mirror
+                        bt = np.where(ok, t, bt)
+                        bf = np.where(ok, j + (y - y0) / (y1 - y0), bf)
+            best[idx] = bt
+            frac[idx] = bf
+        valid = np.isfinite(best)
+        t = np.where(valid, best, 0.0)
+        p = cam + t[:, None] * d
+        phi = np.arctan2(p[:, 0] - self.ax, -(p[:, 2] - self.az)) % (2 * np.pi)
+        s = phi / (2 * np.pi)
+        tt = 1 - frac / (len(self.ys) - 1)
+        out = lambda a: a.reshape(shape)  # noqa: E731
+        return out(np.where(valid, best, np.inf)), out(s), out(tt), out(valid)
 
 
 @dataclass
@@ -224,9 +335,76 @@ def build_scene(ann: Annotation, width: int, height: int) -> Scene:
         scene.planes += _back_wall_planes(b, boxes[k + 1] if k + 1 < len(boxes) else None, k)
     for obj in ann.objects:
         scene.planes += object_planes(obj, scene)
+    for sol in ann.solids:
+        scene.planes.append(solid_surface(sol, scene))
     for fg in ann.foreground:
         scene.planes.append(foreground_plane(fg, scene))
     return scene
+
+
+def _wall_distance(scene: Scene, beta: float, sin_a: float, right: bool):
+    """Horizontal distance D to the axis of a solid in direction beta whose
+    outer silhouette edge touches the left/right wall. Each box has its own
+    walls, so try them in turn and keep the one the solid lands in."""
+    for b in scene.boxes:
+        xw = b.xr if right else b.xl
+        den = np.sin(beta) + (sin_a if right else -sin_a)
+        if abs(den) < 1e-9 or xw * den <= 0:
+            continue
+        D = xw / den
+        z = D * np.cos(beta)
+        if b.z0 - 1e-6 <= z <= b.z1 + 1e-6:
+            return D
+    return None
+
+
+def solid_geometry(sol: Solid, scene: Scene, mount: str | None = None):
+    """(D, beta, rows) for a solid: horizontal distance and direction of its
+    axis, and per profile row (Y, radius). None if it doesn't fit the room."""
+    f = scene.focal
+    vx, vy = scene.principal
+    prof = np.asarray(sol.profile, float)
+    y, xl, xr = prof[:, 0], prof[:, 1], prof[:, 2]
+    bl = np.arctan((xl - vx) / f)
+    br = np.arctan((xr - vx) / f)
+    beta = float(np.median((bl + br) / 2))
+    alpha = np.clip((br - bl) / 2, 1e-4, 1.2)
+    mount = mount or sol.mount
+    if mount == "wall":
+        D = _wall_distance(scene, beta, float(np.sin(alpha.max())), right=beta > 0)
+    else:
+        yb = y.max()
+        if yb <= vy + 1:
+            return None
+        sin_b = float(np.sin(alpha[np.argmax(y)]))
+        D = f * (-scene.yf) / ((yb - vy) * np.cos(beta)) / (1 - sin_b)
+    if D is None or not np.isfinite(D) or D <= 0:
+        return None
+    radius = D * np.sin(alpha)
+    # Height of each row's tangent points (average depth of the two sides).
+    z = D * np.cos(alpha) * np.cos(beta) * np.cos(alpha)
+    ys = (vy - y) * z / f
+    return D, beta, ys, radius
+
+
+def solid_surface(sol: Solid, scene: Scene) -> Lathe:
+    g = solid_geometry(sol, scene)
+    if g is None:
+        raise ValueError(f"solid {sol.name}: its silhouette doesn't fit the room ({sol.mount} mount)")
+    D, beta, ys, radius = g
+    order = np.argsort(ys)
+    ys, radius = ys[order], radius[order]
+    if len(ys) > 48:  # a smooth profile needs few rings
+        k = np.linspace(0, len(ys) - 1, 48)
+        ys, radius = np.interp(k, np.arange(len(ys)), ys), np.interp(k, np.arange(len(ys)), radius)
+    if sol.mount == "floor":
+        ys = ys - (ys[0] - scene.yf)  # rest exactly on the floor
+    # Caps: close the profile at both ends.
+    ys = np.concatenate([[ys[0]], ys, [ys[-1]]])
+    radius = np.concatenate([[0.0], radius, [0.0]])
+    ax, az = D * np.sin(beta), D * np.cos(beta)
+    seg = next((k for k, b in enumerate(scene.boxes) if b.z0 <= az <= b.z1), len(scene.boxes) - 1)
+    return Lathe(f"r_{sol.name}", float(ax), float(az), radius, ys, segment=seg)
 
 
 def object_planes(obj: RoomObject, scene: Scene) -> list[Plane]:

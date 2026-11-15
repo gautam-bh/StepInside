@@ -33,12 +33,17 @@ def write_scene(scene: Scene, textures: dict, out_dir, image_name: str, source_i
             "name": plane.name,
             "kind": plane.kind,
             "segment": plane.segment,
-            # Order: top-left, top-right, bottom-right, bottom-left of the texture.
-            "corners": [to_three(c) for c in plane.corners],
             "texture": f"{plane.name}.png",
             "hole_fraction": round(float((tex[..., 3] < 0.5).mean()), 4),
         }
-        if plane.kind == "box":
+        if plane.kind == "lathe":
+            # three.js LatheGeometry input: axis position and (radius, y) profile, bottom to top.
+            entry["axis"] = [round(float(plane.ax), 5), round(float(-plane.az), 5)]
+            entry["profile"] = [[round(float(r), 5), round(float(y), 5)] for r, y in zip(plane.radius, plane.ys)]
+        else:
+            # Order: top-left, top-right, bottom-right, bottom-left of the texture.
+            entry["corners"] = [to_three(c) for c in plane.corners]
+        if plane.kind in ("box", "lathe"):
             to_pil(push_pull_fill(tex)).convert("RGB").save(out / f"{plane.name}_filled.jpg", quality=92)
             entry["texture_filled"] = f"{plane.name}_filled.jpg"
         planes.append(entry)

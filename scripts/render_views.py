@@ -56,7 +56,7 @@ def main():
     h, w = image.shape[:2]
     scene = build_scene(ann, w, h)
     raw = extract_textures(scene, image, [f.polygon for f in ann.foreground])
-    box_names = {p.name for p in scene.planes if p.kind == "box"}
+    box_names = {p.name for p in scene.planes if p.kind in ("box", "lathe")}
     filled = {k: (push_pull_fill(v) if k in box_names else v) for k, v in raw.items()}
 
     name = Path(a.annotation).stem

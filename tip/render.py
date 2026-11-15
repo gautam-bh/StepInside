@@ -4,7 +4,7 @@ The interactive viewer is viewer/index.html (three.js). This renderer gives
 the same picture from Python, for figures and for checking that the original
 camera reproduces the input photo.
 
-Box planes are hit-tested (from inside the box exactly one face is hit).
+Box planes and solids (surfaces of revolution) are hit-tested (from inside the box exactly one face is hit).
 Foreground billboards are then composited over the box from far to near.
 As in classic TIP they are drawn on top of the box, so a billboard slightly
 outside a wall still shows.
@@ -28,6 +28,8 @@ def rotation(yaw_deg: float = 0.0, pitch_deg: float = 0.0) -> np.ndarray:
 
 def _hit(plane: Plane, cam: np.ndarray, dirs: np.ndarray):
     """Ray/rectangle intersection. Returns (t, s, tt, valid)."""
+    if hasattr(plane, "hit"):  # a Lathe (surface of revolution)
+        return plane.hit(cam, dirs)
     k = plane.normal_axis
     c = plane.origin[k]
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -74,7 +76,7 @@ def render_view(
     color = np.zeros((H, W, 3))
     alpha = np.zeros((H, W))
     for plane in scene.planes:
-        if plane.kind != "box":
+        if plane.kind not in ("box", "lathe"):
             continue
         t, s, tt, valid = _hit(plane, cam, dirs)
         closer = valid & (t < best_t)
