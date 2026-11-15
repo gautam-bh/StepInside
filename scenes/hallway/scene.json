@@ -825,7 +825,7 @@
         ]
       ],
       "texture": "s4_floor.png",
-      "hole_fraction": 0.001,
+      "hole_fraction": 0.0283,
       "texture_filled": "s4_floor_filled.jpg"
     },
     {
@@ -915,7 +915,7 @@
         ]
       ],
       "texture": "s4_right.png",
-      "hole_fraction": 0.016,
+      "hole_fraction": 0.0873,
       "texture_filled": "s4_right_filled.jpg"
     },
     {
@@ -945,7 +945,7 @@
         ]
       ],
       "texture": "s5_floor.png",
-      "hole_fraction": 0.0183,
+      "hole_fraction": 0.1003,
       "texture_filled": "s5_floor_filled.jpg"
     },
     {
@@ -1035,7 +1035,7 @@
         ]
       ],
       "texture": "s5_right.png",
-      "hole_fraction": 0.3077,
+      "hole_fraction": 0.4665,
       "texture_filled": "s5_right_filled.jpg"
     },
     {
@@ -1065,7 +1065,7 @@
         ]
       ],
       "texture": "s5_back_right.png",
-      "hole_fraction": 0.0,
+      "hole_fraction": 0.1024,
       "texture_filled": "s5_back_right_filled.jpg"
     },
     {
@@ -1217,6 +1217,156 @@
       "texture": "s6_back.png",
       "hole_fraction": 0.0,
       "texture_filled": "s6_back_filled.jpg"
+    },
+    {
+      "name": "o_trash_bin_front",
+      "kind": "box",
+      "segment": 4,
+      "corners": [
+        [
+          0.89275,
+          -0.71884,
+          -26.79549
+        ],
+        [
+          1.29855,
+          -0.71884,
+          -26.79549
+        ],
+        [
+          1.29855,
+          -1.6,
+          -26.79549
+        ],
+        [
+          0.89275,
+          -1.6,
+          -26.79549
+        ]
+      ],
+      "texture": "o_trash_bin_front.png",
+      "hole_fraction": 0.0556,
+      "texture_filled": "o_trash_bin_front_filled.jpg"
+    },
+    {
+      "name": "o_trash_bin_left",
+      "kind": "box",
+      "segment": 4,
+      "corners": [
+        [
+          0.89275,
+          -0.71884,
+          -27.35043
+        ],
+        [
+          0.89275,
+          -0.71884,
+          -26.79549
+        ],
+        [
+          0.89275,
+          -1.6,
+          -26.79549
+        ],
+        [
+          0.89275,
+          -1.6,
+          -27.35043
+        ]
+      ],
+      "texture": "o_trash_bin_left.png",
+      "hole_fraction": 1.0,
+      "texture_filled": "o_trash_bin_left_filled.jpg"
+    },
+    {
+      "name": "o_trash_bin_right",
+      "kind": "box",
+      "segment": 4,
+      "corners": [
+        [
+          1.29855,
+          -0.71884,
+          -26.79549
+        ],
+        [
+          1.29855,
+          -0.71884,
+          -27.35043
+        ],
+        [
+          1.29855,
+          -1.6,
+          -27.35043
+        ],
+        [
+          1.29855,
+          -1.6,
+          -26.79549
+        ]
+      ],
+      "texture": "o_trash_bin_right.png",
+      "hole_fraction": 1.0,
+      "texture_filled": "o_trash_bin_right_filled.jpg"
+    },
+    {
+      "name": "o_trash_bin_top",
+      "kind": "box",
+      "segment": 4,
+      "corners": [
+        [
+          0.89275,
+          -0.71884,
+          -27.35043
+        ],
+        [
+          1.29855,
+          -0.71884,
+          -27.35043
+        ],
+        [
+          1.29855,
+          -0.71884,
+          -26.79549
+        ],
+        [
+          0.89275,
+          -0.71884,
+          -26.79549
+        ]
+      ],
+      "texture": "o_trash_bin_top.png",
+      "hole_fraction": 0.0521,
+      "texture_filled": "o_trash_bin_top_filled.jpg"
+    },
+    {
+      "name": "o_trash_bin_back",
+      "kind": "box",
+      "segment": 4,
+      "corners": [
+        [
+          1.29855,
+          -0.71884,
+          -27.35043
+        ],
+        [
+          0.89275,
+          -0.71884,
+          -27.35043
+        ],
+        [
+          0.89275,
+          -1.6,
+          -27.35043
+        ],
+        [
+          1.29855,
+          -1.6,
+          -27.35043
+        ]
+      ],
+      "texture": "o_trash_bin_back.png",
+      "hole_fraction": 1.0,
+      "texture_filled": "o_trash_bin_back_filled.jpg"
     },
     {
       "name": "fg_extinguishers",

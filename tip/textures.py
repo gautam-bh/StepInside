@@ -133,6 +133,9 @@ def push_pull_fill(rgba: np.ndarray) -> np.ndarray:
     a = rgba[..., 3:4].copy()
     if a.min() > 0.999:
         return rgba.copy()
+    if a.max() < 1e-6:
+        # Nothing seen at all (e.g. the far side of an object): neutral grey.
+        return np.concatenate([np.full_like(rgb, 0.5), np.ones_like(a)], axis=-1).astype(np.float32)
 
     def down(x):
         h, w = x.shape[:2]
