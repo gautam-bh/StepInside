@@ -26,6 +26,22 @@ class Foreground:
 
 
 @dataclass
+class RoomObject:
+    """A box-shaped object aligned with the room (cabinet, desk, shelf, bed),
+    standing on the floor with its front face toward the camera.
+
+    front: [x1, y1, x2, y2] image rectangle of its front face. The bottom
+        edge y2 is where it meets the floor, which gives its depth.
+    back_y: image row where its far bottom edge meets the floor (between the
+        VP and y2). Its depth sets how far back the object extends.
+    """
+
+    name: str
+    front: list[float]
+    back_y: float
+
+
+@dataclass
 class Annotation:
     image: str
     vanishing_point: tuple[float, float]
@@ -39,6 +55,8 @@ class Annotation:
     # Further boxes behind the back wall (e.g. a corridor beyond a doorway),
     # each given as the image rectangle of its far end, nearest first.
     segments: list[list[float]] = field(default_factory=list)
+    # Room-aligned 3D boxes standing on the floor.
+    objects: list[RoomObject] = field(default_factory=list)
 
     def focal_px(self, width: int, height: int) -> float:
         """Focal length in pixels (35mm frame long side = 36mm)."""
@@ -49,7 +67,8 @@ def load_annotation(path: str | Path) -> Annotation:
     path = Path(path)
     raw = json.loads(path.read_text())
     fgs = [Foreground(**f) for f in raw.pop("foreground", [])]
-    ann = Annotation(**raw, foreground=fgs)
+    objs = [RoomObject(**o) for o in raw.pop("objects", [])]
+    ann = Annotation(**raw, foreground=fgs, objects=objs)
     ann.vanishing_point = tuple(ann.vanishing_point)
     ann.back_wall = tuple(ann.back_wall)
     # Resolve the image path relative to the repo root (annotation's grandparent).
@@ -69,6 +88,7 @@ def save_annotation(ann: Annotation, path: str | Path) -> None:
         "focal_35mm": ann.focal_35mm,
         "camera_height": ann.camera_height,
         "segments": [list(r) for r in ann.segments],
+        "objects": [{"name": o.name, "front": list(o.front), "back_y": o.back_y} for o in ann.objects],
         "foreground": [
             {k: v for k, v in f.__dict__.items() if v is not None} for f in ann.foreground
         ],

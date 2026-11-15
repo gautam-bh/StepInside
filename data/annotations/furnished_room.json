@@ -1,0 +1,39 @@
+{
+  "image": "data/images/furnished_room.png",
+  "vanishing_point": [
+    300.1,
+    419.4
+  ],
+  "back_wall": [
+    196.5,
+    300.5,
+    422.5,
+    558.5
+  ],
+  "focal_35mm": 26.0,
+  "camera_height": 1.6,
+  "segments": [],
+  "objects": [
+    {
+      "name": "object1",
+      "front": [
+        378.5,
+        598.5,
+        470.5,
+        720.5
+      ],
+      "back_y": 661.0
+    },
+    {
+      "name": "object2",
+      "front": [
+        108.5,
+        518.5,
+        190.5,
+        698.5
+      ],
+      "back_y": 636.0
+    }
+  ],
+  "foreground": []
+}

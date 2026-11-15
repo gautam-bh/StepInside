@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from tip import build_scene, load_annotation  # noqa: E402
-from tip.annotations import Annotation  # noqa: E402
+from tip.annotations import Annotation, RoomObject  # noqa: E402
 from tip.auto_annotate import (  # noqa: E402
     auto_annotate_array,
     downscale,
@@ -29,25 +29,35 @@ from tip.auto_annotate import (  # noqa: E402
 )
 from tip.editor import AnnotationEditor  # noqa: E402
 from tip.render import render_view  # noqa: E402
-from tip.textures import load_image  # noqa: E402
+from tip.textures import extract_textures, load_image  # noqa: E402
 
 
 # --------------------------------------------------------------------------- synthetic rooms
-def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=()):
+def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=(), objects=(), decor=False):
     """Render a box room with plain-coloured, slightly noisy surfaces and a
     tiled floor, with known VP and back wall.
 
     Noise is kept fine and faint: coarse texture noise gets magnified near
-    the camera into blocky bilinear patterns that real photos don't have."""
+    the camera into blocky bilinear patterns that real photos don't have.
+
+    objects: RoomObjects (dark boxes, with drawer lines on the front).
+    decor: add a poster on the back wall and a door on the left wall:
+    rectangles that are *not* room-aligned objects."""
     w, h = size
-    ann = Annotation(image="synthetic", vanishing_point=vp, back_wall=back_wall, segments=[list(r) for r in segments])
+    ann = Annotation(image="synthetic", vanishing_point=vp, back_wall=back_wall, segments=[list(r) for r in segments],
+                     objects=list(objects))
     scene = build_scene(ann, w, h)
     rng = np.random.default_rng(seed)
     shade = {"floor": 0.55, "ceiling": 0.22, "left": 0.85, "right": 0.75, "back": 0.66}
+    obj_shade = {"front": 0.32, "left": 0.2, "right": 0.2, "top": 0.42, "back": 0.3}  # dark wood
     tex = {}
     for p in scene.planes:
-        kind = p.name.split("_")[1]  # s<k>_<kind>[_band]
-        base = shade[kind]
+        if p.name.startswith("o_"):  # o_<name>_<face>
+            kind = "object"
+            base = obj_shade[p.name.rsplit("_", 1)[1]]
+        else:
+            kind = p.name.split("_")[1]  # s<k>_<kind>[_band]
+            base = shade[kind]
         n = 1024
         t = np.full((n, n, 3), base, np.float32)
         t += rng.normal(0, 0.005, t.shape).astype(np.float32)
@@ -56,6 +66,13 @@ def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=()):
             t[:, ::128, :] -= 0.12
             if segments:  # darker threshold strip where the floor meets the next box
                 t[: n // 40] -= 0.2
+        if decor and p.name == "s0_back":  # poster
+            t[int(0.2 * n): int(0.45 * n), int(0.3 * n): int(0.6 * n)] = 0.3
+        if decor and p.name == "s0_left":  # door, from the floor up (columns run near -> far)
+            t[int(0.3 * n):, int(0.55 * n): int(0.75 * n)] = 0.4
+        if p.name.endswith("_front"):  # drawer lines
+            t[n // 3 - 4: n // 3 + 4] -= 0.1
+            t[2 * n // 3 - 4: 2 * n // 3 + 4] -= 0.1
         tex[p.name] = np.concatenate([np.clip(t, 0, 1), np.ones((n, n, 1), np.float32)], axis=-1)
     # Supersample 3x and box-downsample: anti-aliased edges like a real
     # camera's (a one-ray-per-pixel render has staircase edges whose gradient
@@ -179,9 +196,72 @@ def test_hallway_matches_hand_annotation():
     vp_err = np.hypot(r.vanishing_point[0] - ann.vanishing_point[0], r.vanishing_point[1] - ann.vanishing_point[1])
     assert bw_err < 25, f"back wall {r.back_wall} vs hand {ann.back_wall}"
     assert vp_err < 25, f"VP {r.vanishing_point} vs hand {ann.vanishing_point}"
+    # No furniture in the hallway's front room (the extinguishers are round).
+    assert r.objects == [], r.objects
     # Straight lines fit by hand-checked RANSAC at full resolution through the
     # four room edges all cross within ~10 px of (482, 615).
     assert np.hypot(r.vanishing_point[0] - 482, r.vanishing_point[1] - 615) < 8, r.vanishing_point
+
+
+# Rooms with furniture: (vp, back_wall), objects. Room A has a cabinet against
+# the left wall (side + top visible) and a low box on the right. Room B has a
+# low table straddling the centre (only its top recedes) and a wardrobe
+# taller than eye level (only its side recedes). Both have a poster on the
+# back wall and a door on the left wall, rectangles that must NOT be detected.
+FURNISHED = [
+    (CASES[0], [RoomObject("cab", [110, 520, 190, 700], 640), RoomObject("box", [380, 600, 470, 720], 660)]),
+    (CASES[1], [RoomObject("table", [205, 600, 330, 660], 625), RoomObject("wardrobe", [400, 300, 500, 760], 700)]),
+]
+
+
+def test_room_objects_detected():
+    for (vp, bw), objs in FURNISHED:
+        r = auto_annotate_array(synthetic_room(vp, bw, objects=objs, decor=True), deeper=False)
+        assert len(r.objects) == len(objs), f"found {r.objects}, truth {[(o.front, o.back_y) for o in objs]}"
+        for o in objs:
+            front, back_y = min(r.objects, key=lambda f: np.abs(np.subtract(f[0], o.front)).max())
+            err = np.abs(np.subtract(front, o.front)).max()
+            assert err < 4, f"{o.name}: front {front} vs {o.front}"
+            # back_y fixes the depth; 6 px is ~5% of these objects' depth.
+            assert abs(back_y - o.back_y) < 6, f"{o.name}: back edge at {back_y} vs {o.back_y}"
+        # Furniture must not throw off the room itself.
+        assert np.abs(np.subtract(r.back_wall, bw)).max() < 10, f"back wall {r.back_wall} vs {bw}"
+
+
+def test_no_room_objects_in_empty_rooms():
+    """Posters, doors, the back wall and corridor openings are not objects."""
+    for vp, bw in CASES:
+        r = auto_annotate_array(synthetic_room(vp, bw, decor=True), deeper=False)
+        assert r.objects == [], r.objects
+    r = auto_annotate_array(synthetic_room(**CORRIDOR))
+    assert r.objects == [], r.objects
+
+
+def test_room_objects_hide_the_walls_behind_them():
+    """Objects are real 3D boxes: they occlude the floor behind them in the
+    textures, reproduce the photo from the input camera, and shift against
+    the back wall when the camera moves."""
+    (vp, bw), objs = FURNISHED[0]
+    img = synthetic_room(vp, bw, objects=objs)
+    ann = Annotation(image="synthetic", vanishing_point=vp, back_wall=bw, objects=objs)
+    scene = build_scene(ann, 600, 800)
+    tex = extract_textures(scene, img, [])
+    names = [p.name for p in scene.planes]
+    assert {"o_cab_front", "o_cab_right", "o_cab_top", "o_box_left"} <= set(names)
+    # Floor texel under the middle of the cabinet: hidden in the photo -> hole.
+    floor = next(p for p in scene.planes if p.name == "s0_floor")
+    front = next(p for p in scene.planes if p.name == "o_cab_front")
+    back = next(p for p in scene.planes if p.name == "o_cab_back")
+    mid = (front.origin + front.u_axis / 2 + back.origin + back.u_axis / 2) / 2
+    s_ = (mid[0] - floor.origin[0]) / floor.u_axis[0]
+    t_ = (mid[2] - floor.origin[2]) / floor.v_axis[2]
+    ft = tex["s0_floor"]
+    assert ft[int(t_ * ft.shape[0]), int(s_ * ft.shape[1]), 3] == 0
+    # Original view reproduces the photo; a sideways step reveals holes.
+    rgb, hole = render_view(scene, tex)
+    assert np.abs(rgb - img).mean() < 0.01 and hole.mean() < 0.01
+    _, hole2 = render_view(scene, tex, position=(0.4, 0, 0), scale=0.5)
+    assert hole2.mean() > 0.02
 
 
 # --------------------------------------------------------------------------- editor
@@ -283,6 +363,41 @@ def test_save_roundtrip_builds_scene():
         assert any(p.kind == "foreground" for p in scene.planes)
 
 
+def test_add_room_object_and_drag_its_depth():
+    with tempfile.TemporaryDirectory() as d:
+        out = Path(d) / "a.json"
+        ed = _editor(out)  # VP (300, 420)
+        ed.key("o")
+        ed.press(100, 300)  # front top-left
+        ed.press(180, 700)  # front bottom-right
+        assert ed.mode == "edit" and len(ed.state.objects) == 1, ed.message
+        o = ed.state.objects[0]
+        assert o["front"] == [100, 300, 180, 700] and 420 < o["back_y"] < 700
+        # Drag the back handle down: the object gets shallower.
+        hx, hy = ed.object_back_handle(o)
+        ed.press(hx, hy)
+        ed.motion(hx, 680)
+        ed.release()
+        assert o["back_y"] == 680
+        # Can't drag the back edge above the horizon.
+        ed.press(*ed.object_back_handle(o))
+        ed.motion(hx, 100)
+        ed.release()
+        assert o["back_y"] == 421
+        ed.key("s")
+        ann = load_annotation(out)
+        assert ann.objects[0].front == [100, 300, 180, 700]
+        scene = build_scene(ann, 600, 800)
+        assert sum(p.name.startswith("o_object1_") for p in scene.planes) == 5
+        # An object floating above the horizon is refused.
+        ed.key("o")
+        ed.press(100, 100)
+        ed.press(180, 400)
+        assert len(ed.state.objects) == 1 and "rejected" in ed.message
+        ed.key("backspace")
+        assert ed.state.objects == []
+
+
 def test_auto_key_replaces_vp_back_wall_and_boxes():
     ed = _editor()
     ed.auto_fn = lambda: ((310, 410), [180, 280, 430, 570], [[240, 340, 380, 520]])
@@ -291,6 +406,9 @@ def test_auto_key_replaces_vp_back_wall_and_boxes():
     assert ed.state.back_wall == [180, 280, 430, 570]
     assert ed.state.segments == [[240, 340, 380, 520]]
     assert "1 deeper boxes" in ed.message
+    ed.auto_fn = lambda: ((310, 410), [180, 280, 430, 570], [], [([100, 500, 180, 700], 640)])
+    ed.key("a")
+    assert ed.state.segments == [] and ed.state.objects[0]["back_y"] == 640
 
 
 def test_invalid_annotation_is_not_saved():
@@ -317,6 +435,9 @@ def test_editor_draws_with_matplotlib():
     ed.key("b")
     ed.press(240, 360)
     ed.press(380, 500)  # triggers redraw with a box
+    ed.key("o")
+    ed.press(100, 500)
+    ed.press(180, 700)  # and with an object
     fig.canvas.draw()
     assert "[edit]" in ax.get_title()
     plt.close(fig)

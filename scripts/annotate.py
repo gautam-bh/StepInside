@@ -11,9 +11,10 @@
         -> open an existing annotation in the editor
 
 Editor controls: drag the red VP / magenta corners · b add a box behind the
-current last one (click 2 corners) · f outline a foreground object (Enter to
-finish) · Backspace undo · a re-run detection (VP, back wall and deeper
-boxes) · s save · q save and quit.
+current last one (click 2 corners) · o add a room-aligned object (click its
+front face's 2 corners, drag the orange back handle) · f outline a foreground
+object (Enter to finish) · Backspace undo · a re-run detection · s save ·
+q save and quit.
 """
 
 import argparse
@@ -23,7 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from tip.annotations import Annotation, load_annotation, save_annotation  # noqa: E402
+from tip.annotations import Annotation, RoomObject, load_annotation, save_annotation  # noqa: E402
 from tip.auto_annotate import auto_annotate_array  # noqa: E402
 from tip.textures import load_image  # noqa: E402
 
@@ -56,6 +57,8 @@ def main():
         print(f"  vanishing point {r.vanishing_point}, back wall {r.back_wall}")
         for i, seg in enumerate(r.segments or [], start=1):
             print(f"  deeper box {i}: {seg}")
+        for i, (front, back_y) in enumerate(r.objects or [], start=1):
+            print(f"  object {i}: front {front}, back edge at y={back_y}")
         ann = Annotation(
             image=rel(src),
             vanishing_point=r.vanishing_point,
@@ -63,6 +66,7 @@ def main():
             focal_35mm=a.focal_35mm,
             camera_height=a.camera_height,
             segments=r.segments or [],
+            objects=[RoomObject(f"object{i + 1}", list(f), b) for i, (f, b) in enumerate(r.objects or [])],
         )
         out = Path(a.out or ROOT / "data" / "annotations" / (src.stem + ".json"))
 
@@ -83,7 +87,7 @@ def main():
 
     def auto():
         r = auto_annotate_array(image)
-        return r.vanishing_point, r.back_wall, r.segments or []
+        return r.vanishing_point, r.back_wall, r.segments or [], r.objects or []
 
     h, w = image.shape[:2]
     editor = AnnotationEditor(ann, (w, h), out_path=out, auto_fn=auto)

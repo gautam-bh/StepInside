@@ -15,6 +15,11 @@ rectangle of its far end. Its depth comes from where its floor edge
 below the camera. Box k then spans from the previous box's far depth to its
 own, with constant cross-section. Each back wall becomes up to four bands
 around the opening into the next box, and the last box keeps a full back wall.
+
+Room-aligned objects (annotation `objects`) are small axis-aligned boxes
+standing on the floor: front, two sides, top and back. Their faces are
+ordinary box planes, so they hide the walls behind them (those texels become
+holes) and get parallax for free.
 """
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .annotations import Annotation, Foreground
+from .annotations import Annotation, Foreground, RoomObject
 
 
 @dataclass
@@ -217,9 +222,37 @@ def build_scene(ann: Annotation, width: int, height: int) -> Scene:
     for k, b in enumerate(boxes):
         scene.planes += _box_planes(b, k)
         scene.planes += _back_wall_planes(b, boxes[k + 1] if k + 1 < len(boxes) else None, k)
+    for obj in ann.objects:
+        scene.planes += object_planes(obj, scene)
     for fg in ann.foreground:
         scene.planes.append(foreground_plane(fg, scene))
     return scene
+
+
+def object_planes(obj: RoomObject, scene: Scene) -> list[Plane]:
+    """Five faces (front, left, right, top, back) of a room-aligned object."""
+    x1, y1, x2, y2 = obj.front
+    vy = scene.principal[1]
+    if not vy < obj.back_y < y2:
+        raise ValueError(f"object {obj.name}: need vanishing point row {vy:.0f} < back_y {obj.back_y} < "
+                         f"front bottom {y2} (it must stand on the floor and extend away from the camera)")
+    z0 = floor_depth(y2, scene)
+    z1 = floor_depth(obj.back_y, scene)
+    tl = backproject(x1, y1, z0, scene.focal, scene.principal)
+    br = backproject(x2, y2, z0, scene.focal, scene.principal)
+    xl, xr, yb, yt = tl[0], br[0], scene.yf, tl[1]
+    W, Hh, D = xr - xl, yt - yb, z1 - z0
+    seg = next((k for k, b in enumerate(scene.boxes) if b.z0 <= z0 <= b.z1), 0)
+    P = lambda *a: np.array(a, dtype=float)  # noqa: E731
+    p = f"o_{obj.name}_"
+    return [
+        Plane(p + "front", P(xl, yt, z0), P(W, 0, 0), P(0, -Hh, 0), segment=seg),
+        # Sides as seen from outside the object.
+        Plane(p + "left", P(xl, yt, z1), P(0, 0, -D), P(0, -Hh, 0), segment=seg),
+        Plane(p + "right", P(xr, yt, z0), P(0, 0, D), P(0, -Hh, 0), segment=seg),
+        Plane(p + "top", P(xl, yt, z1), P(W, 0, 0), P(0, 0, -D), segment=seg),
+        Plane(p + "back", P(xr, yt, z1), P(-W, 0, 0), P(0, -Hh, 0), segment=seg),
+    ]
 
 
 def foreground_plane(fg: Foreground, scene: Scene) -> Plane:

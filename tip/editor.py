@@ -7,8 +7,11 @@ Controls (also shown in the window):
                       top-left, then bottom-right corner
     f                 add a foreground object: click around its outline,
                       Enter to finish
-    Backspace         undo: last outline point / last foreground / last box
-    a                 re-run automatic detection (VP, back wall, deeper boxes)
+    o                 add a room-aligned object (cabinet, desk): click its
+                      front face's top-left, then bottom-right corner; drag
+                      the orange back handle to set how deep it is
+    Backspace         undo: last outline point / foreground / object / box
+    a                 re-run automatic detection (VP, back wall, deeper boxes, objects)
     s                 save                      q   save and quit
 
 The editing logic lives in AnnotationEditor and takes plain (x, y) events,
@@ -22,7 +25,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .annotations import Annotation, Foreground, save_annotation
+from .annotations import Annotation, Foreground, RoomObject, save_annotation
 
 HANDLE_RADIUS = 18.0  # pixels in image coordinates
 
@@ -33,6 +36,7 @@ class EditorState:
     back_wall: list[float]  # x1, y1, x2, y2
     segments: list[list[float]] = field(default_factory=list)
     foreground: list[dict] = field(default_factory=list)  # {name, polygon}
+    objects: list[dict] = field(default_factory=list)  # {name, front, back_y}
 
 
 class AnnotationEditor:
@@ -40,14 +44,15 @@ class AnnotationEditor:
         self.width, self.height = image_size
         self.ann = ann
         self.out_path = out_path
-        self.auto_fn = auto_fn  # () -> (vp, back_wall[, segments])
+        self.auto_fn = auto_fn  # () -> (vp, back_wall[, segments[, objects]])
         self.state = EditorState(
             vanishing_point=list(ann.vanishing_point),
             back_wall=list(ann.back_wall),
             segments=[list(r) for r in ann.segments],
             foreground=[{"name": f.name, "polygon": [list(p) for p in f.polygon]} for f in ann.foreground],
+            objects=[{"name": o.name, "front": list(o.front), "back_y": o.back_y} for o in ann.objects],
         )
-        self.mode = "edit"  # edit | box | foreground
+        self.mode = "edit"  # edit | box | foreground | object
         self.pending: list[list[float]] = []
         self.drag = None  # handle id while dragging
         self.message = ""
@@ -63,7 +68,19 @@ class AnnotationEditor:
         for i, (a, b, c, d) in enumerate(s.segments):
             h[("seg", i, 0)] = (a, b)
             h[("seg", i, 1)] = (c, d)
+        for i, o in enumerate(s.objects):
+            x1, y1, x2, y2 = o["front"]
+            h[("obj", i, 0)] = (x1, y1)
+            h[("obj", i, 1)] = (x2, y2)
+            h[("obj", i, 2)] = self.object_back_handle(o)
         return h
+
+    def object_back_handle(self, o):
+        """Where the object's back bottom edge would be, below its front's centre."""
+        vx, vy = self.state.vanishing_point
+        x1, _, x2, y2 = o["front"]
+        k = (o["back_y"] - vy) / (y2 - vy) if y2 != vy else 1.0
+        return (vx + ((x1 + x2) / 2 - vx) * k, o["back_y"])
 
     def handle_at(self, x, y, radius=HANDLE_RADIUS):
         best, best_d = None, radius
@@ -92,6 +109,15 @@ class AnnotationEditor:
                 r[0], r[1] = x, y
             else:
                 r[2], r[3] = x, y
+        elif key[0] == "obj":
+            o = s.objects[key[1]]
+            if key[2] == 0:
+                o["front"][0], o["front"][1] = x, y
+            elif key[2] == 1:
+                o["front"][2], o["front"][3] = x, y
+            else:
+                vy = s.vanishing_point[1]
+                o["back_y"] = float(np.clip(y, vy + 1, max(o["front"][3] - 1, vy + 1)))
 
     # ------------------------------------------------------------------ events
     def press(self, x, y):
@@ -99,14 +125,17 @@ class AnnotationEditor:
             return
         if self.mode == "edit":
             self.drag = self.handle_at(x, y)
-        elif self.mode == "box":
+        elif self.mode in ("box", "object"):
             self.pending.append(list(self._clip(x, y)))
             if len(self.pending) == 2:
                 (ax, ay), (bx, by) = self.pending
                 rect = [min(ax, bx), min(ay, by), max(ax, bx), max(ay, by)]
                 self.pending = []
-                self.mode = "edit"
-                self.message = "added box" if self._add_box(rect) else self.message
+                mode, self.mode = self.mode, "edit"
+                if mode == "box":
+                    self.message = "added box" if self._add_box(rect) else self.message
+                else:
+                    self._add_object(rect)
         elif self.mode == "foreground":
             self.pending.append(list(self._clip(x, y)))
         self.on_change()
@@ -129,6 +158,9 @@ class AnnotationEditor:
         elif k == "f":
             self.mode, self.pending = "foreground", []
             self.message = "foreground: click around the outline, Enter to finish"
+        elif k == "o":
+            self.mode, self.pending = "object", []
+            self.message = "object: click its front face's top-left, then bottom-right corner"
         elif k == "enter":
             if self.mode == "foreground":
                 if len(self.pending) >= 3:
@@ -148,11 +180,14 @@ class AnnotationEditor:
             res = self.auto_fn()
             vp, bw = res[0], res[1]
             self.state.vanishing_point, self.state.back_wall = list(vp), list(bw)
+            self.message = "auto-detected VP and back wall"
             if len(res) > 2:
                 self.state.segments = [list(r) for r in res[2]]
                 self.message = f"auto-detected VP, back wall and {len(res[2])} deeper boxes"
-            else:
-                self.message = "auto-detected VP and back wall"
+            if len(res) > 3:
+                self.state.objects = [{"name": f"object{i + 1}", "front": list(f), "back_y": float(b)}
+                                      for i, (f, b) in enumerate(res[3])]
+                self.message += f", {len(res[3])} objects"
         elif k == "s":
             self.save()
         self.on_change()
@@ -163,6 +198,9 @@ class AnnotationEditor:
         elif self.state.foreground:
             self.state.foreground.pop()
             self.message = "removed last foreground object"
+        elif self.state.objects:
+            self.state.objects.pop()
+            self.message = "removed last room object"
         elif self.state.segments:
             self.state.segments.pop()
             self.message = "removed last box"
@@ -176,6 +214,8 @@ class AnnotationEditor:
         fix(self.state.back_wall)
         for r in self.state.segments:
             fix(r)
+        for o in self.state.objects:
+            fix(o["front"])
 
     def _add_box(self, rect) -> bool:
         vx, vy = self.state.vanishing_point
@@ -187,6 +227,18 @@ class AnnotationEditor:
             self.message = "box rejected: its bottom must be above the previous box's bottom (farther away)"
             return False
         self.state.segments.append([round(v, 1) for v in rect])
+        return True
+
+    def _add_object(self, rect) -> bool:
+        vy = self.state.vanishing_point[1]
+        if not rect[3] > vy + 1:
+            self.message = "object rejected: its bottom must be below the vanishing point (on the floor)"
+            return False
+        # Start 30% deeper than its front; drag the back handle to adjust.
+        back_y = vy + (rect[3] - vy) / 1.3
+        name = f"object{len(self.state.objects) + 1}"
+        self.state.objects.append({"name": name, "front": [round(v, 1) for v in rect], "back_y": round(back_y, 1)})
+        self.message = f"added {name}: drag its orange back handle to set its depth"
         return True
 
     def problems(self) -> list[str]:
@@ -201,6 +253,9 @@ class AnnotationEditor:
         for (n0, a), (n1, b) in zip(rects, rects[1:]):
             if not b[3] < a[3]:
                 out.append(f"{n1} must be farther than {n0} (bottom edge higher)")
+        for o in s.objects:
+            if not vy < o["back_y"] < o["front"][3]:
+                out.append(f"{o['name']} must stand on the floor, below the vanishing point")
         return out
 
     def to_annotation(self) -> Annotation:
@@ -214,6 +269,8 @@ class AnnotationEditor:
             camera_height=self.ann.camera_height,
             segments=[r(x) for x in s.segments],
             foreground=[Foreground(name=f["name"], polygon=[r(p) for p in f["polygon"]]) for f in s.foreground],
+            objects=[RoomObject(name=o["name"], front=r(o["front"]), back_y=round(float(o["back_y"]), 1))
+                     for o in s.objects],
         )
 
     def save(self) -> bool:
@@ -255,19 +312,31 @@ class AnnotationEditor:
             for i, (a, b, c, d) in enumerate(s.segments):
                 add(ax.add_patch(mpatches.Rectangle((a, b), c - a, d - b, fill=False,
                                                     ec=colors[i % len(colors)], lw=1.5)))
+            for o in s.objects:
+                x1o, y1o, x2o, y2o = o["front"]
+                k = (o["back_y"] - vy) / (y2o - vy) if y2o != vy else 1.0
+                front = [(x1o, y1o), (x2o, y1o), (x2o, y2o), (x1o, y2o)]
+                back = [(vx + (px - vx) * k, vy + (py - vy) * k) for px, py in front]
+                for poly in (front, back):
+                    pts = np.array(poly + [poly[0]])
+                    add(ax.plot(pts[:, 0], pts[:, 1], "-", color="orange", lw=1.5)[0])
+                for (px, py), (qx, qy) in zip(front, back):
+                    add(ax.plot([px, qx], [py, qy], "-", color="orange", lw=1)[0])
+                bx, by = self.object_back_handle(o)
+                add(ax.plot([bx], [by], "D", color="orange", ms=7, mec="white")[0])
             for f in s.foreground:
                 pts = np.array(f["polygon"] + [f["polygon"][0]])
                 add(ax.plot(pts[:, 0], pts[:, 1], "-", color="lime", lw=2)[0])
             if self.pending:
                 pts = np.array(self.pending)
                 add(ax.plot(pts[:, 0], pts[:, 1], "o-", color="yellow", lw=1.5, ms=4)[0])
-            hx, hy = zip(*[v for k, v in self.handles().items() if k != "vp"])
+            hx, hy = zip(*[v for k, v in self.handles().items() if k != "vp" and not (k[0] == "obj" and k[2] == 2)])
             add(ax.plot(hx, hy, "s", color="magenta", ms=7, mec="white")[0])
             add(ax.plot([vx], [vy], "o", color="red", ms=10, mec="white")[0])
             probs = self.problems()
             status = self.message or ("⚠ " + probs[0] if probs else "")
             ax.set_title(
-                f"[{self.mode}] drag handles · b add box · f foreground · ⌫ undo · a auto · s save · q quit\n{status}",
+                f"[{self.mode}] drag handles · b box · o object · f foreground · ⌫ undo · a auto · s save · q quit\n{status}",
                 fontsize=9,
             )
             fig.canvas.draw_idle()

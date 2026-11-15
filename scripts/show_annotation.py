@@ -1,5 +1,6 @@
 """Draw an annotation over its photo: back wall, vanishing-point rays to the
-image borders (the room edges TIP assumes) and foreground polygons.
+image borders (the room edges TIP assumes), room-aligned objects (orange)
+and foreground polygons.
 
     python scripts/show_annotation.py data/annotations/hallway.json -o outputs/hallway_annotation.png
 """
@@ -42,6 +43,15 @@ def draw(ann_path, out_path, crop=None):
         d.rectangle(list(r), outline=colors[i % len(colors)], width=2)
     r = 8
     d.ellipse([vp[0] - r, vp[1] - r, vp[0] + r, vp[1] + r], outline=(255, 0, 0), width=3)
+    for o in ann.objects:
+        x1o, y1o, x2o, y2o = o.front
+        k = (o.back_y - vp[1]) / (y2o - vp[1])
+        front = [(x1o, y1o), (x2o, y1o), (x2o, y2o), (x1o, y2o)]
+        back = [(vp[0] + (px - vp[0]) * k, vp[1] + (py - vp[1]) * k) for px, py in front]
+        for poly in (front, back):
+            d.line(poly + [poly[0]], fill=(255, 140, 0), width=3)
+        for pf, pb in zip(front, back):
+            d.line([pf, pb], fill=(255, 140, 0), width=2)
     for fg in ann.foreground:
         pts = [tuple(p) for p in fg.polygon]
         d.line(pts + [pts[0]], fill=(0, 255, 0), width=3)

@@ -1,0 +1,478 @@
+{
+  "image": "furnished_room.png",
+  "width": 600,
+  "height": 800,
+  "focal": 577.7777777777777,
+  "principal": [
+    300.1,
+    419.4
+  ],
+  "boxes": [
+    {
+      "x": [
+        -1.1916606757728254,
+        1.4079079798705962
+      ],
+      "y": [
+        -1.6,
+        1.3676491732566494
+      ],
+      "z": [
+        -1.8841137341531753,
+        -6.64589823468328
+      ]
+    }
+  ],
+  "planes": [
+    {
+      "name": "s0_floor",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          -1.19166,
+          -1.6,
+          -6.6459
+        ],
+        [
+          1.40791,
+          -1.6,
+          -6.6459
+        ],
+        [
+          1.40791,
+          -1.6,
+          -1.88411
+        ],
+        [
+          -1.19166,
+          -1.6,
+          -1.88411
+        ]
+      ],
+      "texture": "s0_floor.png",
+      "hole_fraction": 0.4342,
+      "texture_filled": "s0_floor_filled.jpg"
+    },
+    {
+      "name": "s0_ceiling",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          -1.19166,
+          1.36765,
+          -1.88411
+        ],
+        [
+          1.40791,
+          1.36765,
+          -1.88411
+        ],
+        [
+          1.40791,
+          1.36765,
+          -6.6459
+        ],
+        [
+          -1.19166,
+          1.36765,
+          -6.6459
+        ]
+      ],
+      "texture": "s0_ceiling.png",
+      "hole_fraction": 0.018,
+      "texture_filled": "s0_ceiling_filled.jpg"
+    },
+    {
+      "name": "s0_left",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          -1.19166,
+          1.36765,
+          -1.88411
+        ],
+        [
+          -1.19166,
+          1.36765,
+          -6.6459
+        ],
+        [
+          -1.19166,
+          -1.6,
+          -6.6459
+        ],
+        [
+          -1.19166,
+          -1.6,
+          -1.88411
+        ]
+      ],
+      "texture": "s0_left.png",
+      "hole_fraction": 0.2785,
+      "texture_filled": "s0_left_filled.jpg"
+    },
+    {
+      "name": "s0_right",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          1.40791,
+          1.36765,
+          -6.6459
+        ],
+        [
+          1.40791,
+          1.36765,
+          -1.88411
+        ],
+        [
+          1.40791,
+          -1.6,
+          -1.88411
+        ],
+        [
+          1.40791,
+          -1.6,
+          -6.6459
+        ]
+      ],
+      "texture": "s0_right.png",
+      "hole_fraction": 0.1854,
+      "texture_filled": "s0_right_filled.jpg"
+    },
+    {
+      "name": "s0_back",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          -1.19166,
+          1.36765,
+          -6.6459
+        ],
+        [
+          1.40791,
+          1.36765,
+          -6.6459
+        ],
+        [
+          1.40791,
+          -1.6,
+          -6.6459
+        ],
+        [
+          -1.19166,
+          -1.6,
+          -6.6459
+        ]
+      ],
+      "texture": "s0_back.png",
+      "hole_fraction": 0.0191,
+      "texture_filled": "s0_back_filled.jpg"
+    },
+    {
+      "name": "o_object1_front",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          0.41661,
+          -0.95171,
+          -3.07022
+        ],
+        [
+          0.90548,
+          -0.95171,
+          -3.07022
+        ],
+        [
+          0.90548,
+          -1.6,
+          -3.07022
+        ],
+        [
+          0.41661,
+          -1.6,
+          -3.07022
+        ]
+      ],
+      "texture": "o_object1_front.png",
+      "hole_fraction": 0.0,
+      "texture_filled": "o_object1_front_filled.jpg"
+    },
+    {
+      "name": "o_object1_left",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          0.41661,
+          -0.95171,
+          -3.82634
+        ],
+        [
+          0.41661,
+          -0.95171,
+          -3.07022
+        ],
+        [
+          0.41661,
+          -1.6,
+          -3.07022
+        ],
+        [
+          0.41661,
+          -1.6,
+          -3.82634
+        ]
+      ],
+      "texture": "o_object1_left.png",
+      "hole_fraction": 0.0006,
+      "texture_filled": "o_object1_left_filled.jpg"
+    },
+    {
+      "name": "o_object1_right",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          0.90548,
+          -0.95171,
+          -3.07022
+        ],
+        [
+          0.90548,
+          -0.95171,
+          -3.82634
+        ],
+        [
+          0.90548,
+          -1.6,
+          -3.82634
+        ],
+        [
+          0.90548,
+          -1.6,
+          -3.07022
+        ]
+      ],
+      "texture": "o_object1_right.png",
+      "hole_fraction": 1.0,
+      "texture_filled": "o_object1_right_filled.jpg"
+    },
+    {
+      "name": "o_object1_top",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          0.41661,
+          -0.95171,
+          -3.82634
+        ],
+        [
+          0.90548,
+          -0.95171,
+          -3.82634
+        ],
+        [
+          0.90548,
+          -0.95171,
+          -3.07022
+        ],
+        [
+          0.41661,
+          -0.95171,
+          -3.07022
+        ]
+      ],
+      "texture": "o_object1_top.png",
+      "hole_fraction": 0.0,
+      "texture_filled": "o_object1_top_filled.jpg"
+    },
+    {
+      "name": "o_object1_back",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          0.90548,
+          -0.95171,
+          -3.82634
+        ],
+        [
+          0.41661,
+          -0.95171,
+          -3.82634
+        ],
+        [
+          0.41661,
+          -1.6,
+          -3.82634
+        ],
+        [
+          0.90548,
+          -1.6,
+          -3.82634
+        ]
+      ],
+      "texture": "o_object1_back.png",
+      "hole_fraction": 1.0,
+      "texture_filled": "o_object1_back_filled.jpg"
+    },
+    {
+      "name": "o_object2_front",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          -1.09839,
+          -0.56811,
+          -3.31223
+        ],
+        [
+          -0.62831,
+          -0.56811,
+          -3.31223
+        ],
+        [
+          -0.62831,
+          -1.6,
+          -3.31223
+        ],
+        [
+          -1.09839,
+          -1.6,
+          -3.31223
+        ]
+      ],
+      "texture": "o_object2_front.png",
+      "hole_fraction": 0.0,
+      "texture_filled": "o_object2_front_filled.jpg"
+    },
+    {
+      "name": "o_object2_left",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          -1.09839,
+          -0.56811,
+          -4.26798
+        ],
+        [
+          -1.09839,
+          -0.56811,
+          -3.31223
+        ],
+        [
+          -1.09839,
+          -1.6,
+          -3.31223
+        ],
+        [
+          -1.09839,
+          -1.6,
+          -4.26798
+        ]
+      ],
+      "texture": "o_object2_left.png",
+      "hole_fraction": 1.0,
+      "texture_filled": "o_object2_left_filled.jpg"
+    },
+    {
+      "name": "o_object2_right",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          -0.62831,
+          -0.56811,
+          -3.31223
+        ],
+        [
+          -0.62831,
+          -0.56811,
+          -4.26798
+        ],
+        [
+          -0.62831,
+          -1.6,
+          -4.26798
+        ],
+        [
+          -0.62831,
+          -1.6,
+          -3.31223
+        ]
+      ],
+      "texture": "o_object2_right.png",
+      "hole_fraction": 0.0002,
+      "texture_filled": "o_object2_right_filled.jpg"
+    },
+    {
+      "name": "o_object2_top",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          -1.09839,
+          -0.56811,
+          -4.26798
+        ],
+        [
+          -0.62831,
+          -0.56811,
+          -4.26798
+        ],
+        [
+          -0.62831,
+          -0.56811,
+          -3.31223
+        ],
+        [
+          -1.09839,
+          -0.56811,
+          -3.31223
+        ]
+      ],
+      "texture": "o_object2_top.png",
+      "hole_fraction": 0.0,
+      "texture_filled": "o_object2_top_filled.jpg"
+    },
+    {
+      "name": "o_object2_back",
+      "kind": "box",
+      "segment": 0,
+      "corners": [
+        [
+          -0.62831,
+          -0.56811,
+          -4.26798
+        ],
+        [
+          -1.09839,
+          -0.56811,
+          -4.26798
+        ],
+        [
+          -1.09839,
+          -1.6,
+          -4.26798
+        ],
+        [
+          -0.62831,
+          -1.6,
+          -4.26798
+        ]
+      ],
+      "texture": "o_object2_back.png",
+      "hole_fraction": 1.0,
+      "texture_filled": "o_object2_back_filled.jpg"
+    }
+  ]
+}

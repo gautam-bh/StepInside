@@ -21,6 +21,10 @@ Works for one-point-perspective interiors (camera looking down the room).
    four floor/ceiling/wall junctions (over the exact stretch where they'd
    run) plus the edges of its end rectangle, minus a fixed cost per box. So
    the boxes split only where a real boundary is visible.
+4. Room-aligned objects (find_room_objects): cabinets, desks and other
+   boxes on the floor, square to the room. Their front face is an upright
+   rectangle and their side/top edges run toward the VP, ending where the
+   object does.
 
 The result is a starting point. scripts/annotate.py opens it for adjustment.
 """
@@ -447,6 +451,209 @@ def find_deeper_boxes(gx, gy, vp, back_wall, step: int = 2, min_px: int = 6, rat
     return [c[1] for c in chain], gains
 
 
+# --------------------------------------------------------------------------- room-aligned objects
+def _closing(m: np.ndarray, axis: int, r: int) -> np.ndarray:
+    """1D morphological closing (fills gaps up to 2r px) along an axis."""
+    d = m.copy()
+    for k in range(1, r + 1):
+        d |= np.roll(m, k, axis=axis) | np.roll(m, -k, axis=axis)
+    e = d.copy()
+    for k in range(1, r + 1):
+        e &= np.roll(d, k, axis=axis) & np.roll(d, -k, axis=axis)
+    return e
+
+
+def _vertical_segments(vmask: np.ndarray, min_len: int):
+    """Runs of True down each column: arrays (x, y_top, y_bottom)."""
+    m = np.pad(vmask.T, ((0, 0), (1, 1))).astype(np.int8)  # (w, h+2), column-major order
+    d = np.diff(m, axis=1)
+    xs, ys = np.nonzero(d == 1)
+    _, ye = np.nonzero(d == -1)
+    keep = ye - ys >= min_len
+    return xs[keep], ys[keep], ye[keep] - 1
+
+
+def find_room_objects(gx, gy, vp, rects, min_size: int = 10, end_tol: int = 4, cover_min: float = 0.7,
+                      recede_min: float = 0.7, min_recede_px: float = 6.0, max_objects: int = 8):
+    """Room-aligned boxes (cabinets, desks, shelves) standing on the floor.
+
+    In one-point perspective such an object's front face is an axis-aligned
+    rectangle (vertical sides, horizontal top and bottom), and the edges of
+    its visible side face (and top, if below eye level) run toward the VP,
+    stopping where the object ends. That separates it from:
+      - things on the side walls (posters, doors): their top and bottom
+        edges slant toward the VP instead of being horizontal;
+      - things flat on the back wall: no receding edges;
+      - the room's own boxes: they contain the VP.
+
+    1. Vertical edge runs, paired into front-face candidates with matching
+       ends and horizontal edges along the top and bottom.
+    2. The bottom must be below the VP (on the floor) and inside the room
+       box at that depth.
+    3. Receding edges (only edges running along the ray count) are followed
+       from the front corners toward the VP. Each edge ends where its
+       evidence runs out, and the object ends at the median of those ends.
+       Every edge must be mostly present up to there (with 3+ edges, one may
+       be weaker, e.g. against a background of similar colour).
+    rects: the room boxes' far-end rectangles, nearest first.
+    Returns [(front [x1, y1, x2, y2], back_y, score)], best first.
+    """
+    h, w = gx.shape
+    vx, vy = vp
+    agx, agy = np.abs(gx), np.abs(gy)
+    mag = np.hypot(gx, gy)
+    # Half the VP detector's threshold: furniture edges are often low-contrast,
+    # and the structure required below (paired verticals, horizontal top and
+    # bottom, receding edges) keeps noise out.
+    thresh = 0.5 * max(np.percentile(mag, 90), 0.2 * np.percentile(mag, 99.5))
+    # Edge pixels by orientation, within ~18 deg (vertical edges have a horizontal gradient).
+    vm = (agx > thresh) & (agx > 3 * agy)
+    hm = (agy > thresh) & (agy > 3 * agx)
+    vm = _closing(_band_max(vm, axis=1), axis=0, r=1)
+    hm = _closing(_band_max(hm, axis=0), axis=1, r=1)
+    cum0 = lambda a: np.concatenate([np.zeros((1, a.shape[1])), np.cumsum(a, axis=0)], axis=0)  # noqa: E731
+    cum1 = lambda a: np.concatenate([np.zeros((a.shape[0], 1)), np.cumsum(a, axis=1)], axis=1)  # noqa: E731
+    Cv, Ch, Gv, Gh = cum0(vm), cum1(hm), cum0(agx), cum1(agy)
+    vcov = lambda x, a, b: (Cv[b + 1, x] - Cv[a, x]) / np.maximum(b + 1 - a, 1)  # noqa: E731
+    hcov = lambda y, a, b: (Ch[y, b + 1] - Ch[y, a]) / np.maximum(b + 1 - a, 1)  # noqa: E731
+
+    X, YT, YB = _vertical_segments(vm, min_size)
+    if len(X) < 2:
+        return []
+    # Pair every two runs that overlap over most of their length.
+    i, j = np.triu_indices(len(X), k=1)
+    a, b = np.where(X[i] < X[j], i, j), np.where(X[i] < X[j], j, i)
+    top, bot = np.maximum(YT[a], YT[b]), np.minimum(YB[a], YB[b])
+    ok = ((X[b] - X[a] >= min_size) & (bot - top >= min_size)
+          & (np.abs(YT[a] - YT[b]) <= 3 * end_tol) & (np.abs(YB[a] - YB[b]) <= 3 * end_tol))
+    x1, x2, y1, y2 = X[a][ok], X[b][ok], top[ok], bot[ok]
+    if len(x1) == 0:
+        return []
+    r = np.arange(-2 * end_tol, 2 * end_tol + 1)
+
+    def snap_row(y, xa, xb):
+        """Move y to the row nearby with the strongest horizontal edge along [xa, xb]."""
+        c = np.clip(y[:, None] + r[None, :], 0, h - 1)
+        k = np.argmax(Gh[c, xb[:, None] + 1] - Gh[c, xa[:, None]], axis=1)
+        return c[np.arange(len(y)), k]
+
+    def snap_col(x, ya, yb):
+        c = np.clip(x[:, None] + r[None, :] // 2, 0, w - 1)
+        k = np.argmax(Gv[yb[:, None] + 1, c] - Gv[ya[:, None], c], axis=1)
+        return c[np.arange(len(x)), k]
+
+    for _ in range(2):
+        y2, y1 = snap_row(y2, x1, x2), snap_row(y1, x1, x2)
+        x1, x2 = snap_col(x1, y1, y2), snap_col(x2, y1, y2)
+    ok = ((y2 > vy + min_size) & (y2 - y1 >= min_size) & (x2 - x1 >= min_size)
+          & ~((x1 < vx) & (vx < x2) & (y1 < vy) & (vy < y2)))
+    x1, x2, y1, y2 = x1[ok], x2[ok], y1[ok], y2[ok]
+    cb, ct, cl, cr = hcov(y2, x1, x2), hcov(y1, x1, x2), vcov(x1, y1, y2), vcov(x2, y1, y2)
+    ok = (np.minimum(cb, ct) >= cover_min) & (np.minimum(cl, cr) >= cover_min)
+    cands = np.stack([x1, y1, x2, y2], axis=1)[ok]
+    fcov = ((cb + ct + cl + cr) / 4)[ok]
+    if len(cands) == 0:
+        return []
+    cands, idx = np.unique(cands, axis=0, return_index=True)
+    fcov = fcov[idx]
+
+    # Room box at each candidate's floor contact, and its walls at that row.
+    rows = np.array([r[3] for r in rects], float)
+    out = []
+    for (x1, y1, x2, y2), fc in zip(cands.astype(float), fcov):
+        k = int(np.sum(rows >= y2))  # box index whose floor contains row y2
+        if k >= len(rects):
+            continue
+        R = rects[k]
+        s = (y2 - vy) / (R[3] - vy)
+        wl, wr = vx + (R[0] - vx) * s, vx + (R[2] - vx) * s
+        # Loose: the room box may itself be a few px off.
+        tol = max(end_tol, 0.15 * (wr - wl))
+        if x1 < wl - tol or x2 > wr + tol:
+            continue
+        # Visible receding edges: the side facing the VP, and the top if below eye level.
+        corners = []
+        if x2 < vx:
+            corners += [(x2, y1), (x2, y2)]
+        elif x1 > vx:
+            corners += [(x1, y1), (x1, y2)]
+        if y1 > vy:
+            corners += [(x1, y1), (x2, y1)]
+        corners = list(dict.fromkeys(corners))
+        if not corners:
+            continue
+        # Sample the receding edges at common depth ratios: point = c + u (vp - c),
+        # u up to the end of the room box.
+        u_max = 1 - (R[3] - vy) / (y2 - vy)
+        L = max(np.hypot(vx - cx, vy - cy) for cx, cy in corners) * u_max
+        n = int(L)
+        if n < min_recede_px:
+            continue
+        u = (np.arange(n) + 0.5) / n * u_max
+        ev = []
+        for cx, cy in corners:
+            ddx, ddy = vx - cx, vy - cy
+            nl = np.hypot(ddx, ddy)
+            nx, ny = -ddy / nl, ddx / nl
+            px, py = cx + u * ddx, cy + u * ddy
+            hit = np.zeros(n, bool)
+            for o in (-1.5, -0.75, 0, 0.75, 1.5):
+                sx, sy = _sample(gx, px + o * nx, py + o * ny), _sample(gy, px + o * nx, py + o * ny)
+                across = np.abs(sx * nx + sy * ny)
+                along = np.abs(sx * ddx + sy * ddy) / nl
+                # An edge running along the ray (within ~14 deg), not just crossing it.
+                hit |= (across > thresh) & (along < 0.25 * across)
+            ev.append(hit.astype(float))
+        ev = np.array(ev)
+        # Each edge ends where its evidence runs out (best running sum of
+        # evidence - 0.5); the object ends at the median of those ends.
+        # Within a blur radius of a back corner the gradient mixes two edges
+        # and fails the orientation test, so add one sample back.
+        ends = np.argmax(np.cumsum(ev - 0.5, axis=1), axis=1)
+        m = min(int(np.median(ends)) + 1, n - 1)
+        u_end = u[m]
+        lens = [np.hypot(vx - cx, vy - cy) * u_end for cx, cy in corners]
+        cov = ev[:, : m + 1].mean(axis=1)
+        # With 3+ edges, one may fade (e.g. against a background of similar colour).
+        cov = np.sort(cov)
+        weak_ok = cov[0] >= 0.4 if len(cov) >= 3 else cov[0] >= recede_min
+        if min(lens) < min_recede_px or cov[-2] < recede_min or not weak_ok:
+            continue
+        back_y = vy + (y2 - vy) * (1 - u_end)
+        out.append(([x1, y1, x2, y2], float(back_y), float(fc + cov.mean())))
+    # Non-maximum suppression: drop candidates mostly overlapping a better one.
+    out.sort(key=lambda o: -o[2])
+    kept = []
+    for o in out:
+        a = o[0]
+        area = (a[2] - a[0]) * (a[3] - a[1])
+        if all(max(0, min(a[2], b[0][2]) - max(a[0], b[0][0])) * max(0, min(a[3], b[0][3]) - max(a[1], b[0][1]))
+               < 0.3 * min(area, (b[0][2] - b[0][0]) * (b[0][3] - b[0][1])) for b in kept):
+            kept.append(o)
+    return kept[:max_objects]
+
+
+def object_footprint(front, back_y, vp) -> np.ndarray:
+    """Image outline (convex polygon) of a room-aligned object: its front
+    rectangle plus the same rectangle shrunk toward the VP to its back depth."""
+    x1, y1, x2, y2 = front
+    k = (back_y - vp[1]) / (y2 - vp[1])
+    pts = np.array([(x, y) for x in (x1, x2) for y in (y1, y2)], float)
+    pts = np.concatenate([pts, vp + (pts - vp) * k])
+    # Monotone-chain convex hull.
+    pts = pts[np.lexsort((pts[:, 1], pts[:, 0]))]
+
+    def half(ps):
+        out = []
+        for q in ps:
+            while len(out) >= 2 and np.cross(out[-1] - out[-2], q - out[-2]) <= 0:
+                out.pop()
+            out.append(q)
+        return out[:-1]
+
+    return np.array(half(pts) + half(pts[::-1]))
+
+
 def _rect_score(gx, gy, vp, rect, bound=None):
     """Score of one given rectangle (same formula as _search_rect)."""
     a = lambda v: np.array([int(round(v))])  # noqa: E731
@@ -544,9 +751,11 @@ class AutoResult:
     rays: dict  # quadrant -> angle in radians (image coords)
     segments: list = None  # deeper boxes, nearest first (full-res rects)
     segment_scores: list = None
+    objects: list = None  # [(front [x1, y1, x2, y2], back_y)] room-aligned boxes, full-res
 
 
-def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, deeper: bool = True) -> AutoResult:
+def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, deeper: bool = True,
+                        objects: bool = True) -> AutoResult:
     """Run the detector on an RGB/gray float image; returns full-res coords."""
     small, s = downscale(image, max_side)
     gray = to_gray(small)
@@ -566,15 +775,28 @@ def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, d
                     best = (cand, bw, score)
     vp, bw, _ = best
     vp, _ = refine_vp_from_corners(gx, gy, vp, bw)
+    # Furniture edges can pose as room edges. If there are room-aligned
+    # objects, find the back wall again with their image footprints masked out.
+    rgx, rgy = gx, gy
+    first = find_room_objects(gx, gy, vp, [bw]) if objects else []
+    if first:
+        from .textures import polygon_mask
+
+        polys = [object_footprint(f, b, vp) for f, b, _ in first]
+        keep = ~polygon_mask(polys, gx.shape[1], gx.shape[0], dilate=2)
+        rgx, rgy = gx * keep, gy * keep
+        bw, _ = find_back_wall(rgx, rgy, vp)
     rays = rays_from_rect(vp, bw)
-    segs, seg_scores = (find_deeper_boxes(gx, gy, vp, bw) if deeper else ([], []))
+    segs, seg_scores = (find_deeper_boxes(rgx, rgy, vp, bw) if deeper else ([], []))
+    objs = find_room_objects(gx, gy, vp, [bw] + segs) if objects else []
     inv = 1.0 / s
     # Map back to full-res pixel coordinates (pixel centers).
     to_full = lambda v: (v + 0.5) * inv - 0.5  # noqa: E731
     vp_full = (round(to_full(vp[0]), 1), round(to_full(vp[1]), 1))
     bw_full = [round(to_full(v), 1) for v in bw]
     segs_full = [[round(to_full(v), 1) for v in r] for r in segs]
-    return AutoResult(vp_full, bw_full, rays, segs_full, seg_scores)
+    objs_full = [([round(float(to_full(v)), 1) for v in front], round(float(to_full(back_y)), 1)) for front, back_y, _ in objs]
+    return AutoResult(vp_full, bw_full, rays, segs_full, seg_scores, objs_full)
 
 
 def auto_annotate(image_path: str, image: np.ndarray | None = None, **kw) -> Annotation:
@@ -583,5 +805,8 @@ def auto_annotate(image_path: str, image: np.ndarray | None = None, **kw) -> Ann
 
         image = load_image(image_path)
     r = auto_annotate_array(image, **kw)
+    from .annotations import RoomObject
+
     return Annotation(image=str(image_path), vanishing_point=r.vanishing_point, back_wall=tuple(r.back_wall),
-                      segments=r.segments or [])
+                      segments=r.segments or [],
+                      objects=[RoomObject(f"object{i + 1}", list(f), b) for i, (f, b) in enumerate(r.objects or [])])
