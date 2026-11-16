@@ -799,7 +799,19 @@ def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, d
     return AutoResult(vp_full, bw_full, rays, segs_full, seg_scores, objs_full)
 
 
-def auto_annotate(image_path: str, image: np.ndarray | None = None, **kw) -> Annotation:
+def add_solids(ann: Annotation, image: np.ndarray) -> Annotation:
+    """Detect surfaces of revolution (revolve.find_solids) in the room that
+    ann describes and store them as ann.solids."""
+    from .geometry import build_scene
+    from .revolve import find_solids
+
+    ann.solids = []
+    scene = build_scene(ann, image.shape[1], image.shape[0])
+    ann.solids = find_solids(image, scene)
+    return ann
+
+
+def auto_annotate(image_path: str, image: np.ndarray | None = None, solids: bool = True, **kw) -> Annotation:
     if image is None:
         from .textures import load_image
 
@@ -807,6 +819,13 @@ def auto_annotate(image_path: str, image: np.ndarray | None = None, **kw) -> Ann
     r = auto_annotate_array(image, **kw)
     from .annotations import RoomObject
 
-    return Annotation(image=str(image_path), vanishing_point=r.vanishing_point, back_wall=tuple(r.back_wall),
-                      segments=r.segments or [],
-                      objects=[RoomObject(f"object{i + 1}", list(f), b) for i, (f, b) in enumerate(r.objects or [])])
+    ann = Annotation(image=str(image_path), vanishing_point=r.vanishing_point, back_wall=tuple(r.back_wall),
+                     segments=r.segments or [],
+                     objects=[RoomObject(f"object{i + 1}", list(f), b) for i, (f, b) in enumerate(r.objects or [])])
+    if solids:
+        try:
+            import cv2  # noqa: F401  (the solid detector's default path needs OpenCV)
+        except ImportError:
+            return ann
+        add_solids(ann, image)
+    return ann

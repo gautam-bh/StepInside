@@ -41,6 +41,7 @@ def main():
     ap.add_argument("input", help="an image, or an existing annotation .json")
     ap.add_argument("-o", "--out", help="annotation path (default data/annotations/<image name>.json)")
     ap.add_argument("--auto-only", action="store_true", help="run detection and save without opening a window")
+    ap.add_argument("--no-solids", action="store_true", help="skip the solid (vase, extinguisher) detector")
     ap.add_argument("--focal-35mm", type=float, default=26.0)
     ap.add_argument("--camera-height", type=float, default=1.6)
     a = ap.parse_args()
@@ -69,6 +70,13 @@ def main():
             objects=[RoomObject(f"object{i + 1}", list(f), b) for i, (f, b) in enumerate(r.objects or [])],
         )
         out = Path(a.out or ROOT / "data" / "annotations" / (src.stem + ".json"))
+        if not a.no_solids:
+            from tip.auto_annotate import add_solids
+
+            print("detecting solids (surfaces of revolution) ...")
+            add_solids(ann, image)
+            for sol in ann.solids:
+                print(f"  {sol.name}: {sol.mount}-mounted, rows {sol.profile[0][0]:.0f}-{sol.profile[-1][0]:.0f}")
 
     out.parent.mkdir(parents=True, exist_ok=True)
     if a.auto_only:

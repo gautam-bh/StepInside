@@ -227,6 +227,266 @@ def symmetric_grabcut(img: np.ndarray, gx: np.ndarray, c: float, seed: np.ndarra
     return result
 
 
+def _to_lab(img: np.ndarray) -> np.ndarray:
+    import cv2
+
+    u8 = (np.clip(img, 0, 1) * 255).astype(np.uint8)
+    return cv2.cvtColor(np.ascontiguousarray(u8), cv2.COLOR_RGB2LAB).astype(np.float32)
+
+
+def room_background(img: np.ndarray, scene, s: float, cell=(0.02, 0.05), window: float = 2.0,
+                    passes: int = 2, outlier: float = 15.0):
+    """What each pixel would look like if the room were empty, from the room
+    geometry alone. Room surfaces are made of stripes that run along the room:
+    a side wall's paint, baseboard and rails depend only on height, and so
+    do a back wall's bands. So on a wall the background colour at a point is
+    the median of that wall's colours over +-window metres along it, at the
+    same height. On the floor and ceiling the median runs across the room
+    (along X, at the same depth): an object standing on the floor hides a
+    long stretch of floor in depth behind it, but only its own width across. A second pass
+    repeats the median without the cells the first pass found to be objects,
+    so large objects don't leak into the background around them.
+
+    img is the downscaled photo (factor s of the scene's resolution). Returns
+    (background, alternative background, plane index per pixel), the
+    backgrounds as Lab images (NaN where there is none). The alternative is
+    the floor and ceiling median in depth, which knows about the baseboards
+    where the room's fitted seams are a little off."""
+    from .render import _hit
+
+    H, W = img.shape[:2]
+    lab = _to_lab(img)
+    u, v = np.meshgrid((np.arange(W) + 0.5) / s - 0.5, (np.arange(H) + 0.5) / s - 0.5)
+    vx, vy = scene.principal
+    dirs = np.stack([(u - vx) / scene.focal, -(v - vy) / scene.focal, np.ones_like(u)], axis=-1)
+    best = np.full((H, W), np.inf)
+    pid = np.full((H, W), -1)
+    for i, p in enumerate(scene.planes):
+        if p.kind != "box":
+            continue
+        t, _, _, ok = _hit(p, np.zeros(3), dirs)
+        closer = ok & (t < best)
+        best[closer] = t[closer]
+        pid[closer] = i
+    pts = dirs * np.where(np.isfinite(best), best, 0)[..., None]
+    bg = np.full_like(lab, np.nan)
+    bg_alt = np.full_like(lab, np.nan)
+    for i, p in enumerate(scene.planes):
+        m = pid == i
+        if m.sum() < 50:
+            continue
+        ax = p.normal_axis
+        if ax == 1:  # floor / ceiling: across the room, and (alt) in depth
+            bg[m] = _stripe_median(lab[m], pts[m][:, 0], pts[m][:, 2], cell, window, passes, outlier)
+            bg_alt[m] = _stripe_median(lab[m], pts[m][:, 2], pts[m][:, 0], cell, window, passes, outlier)
+        else:  # walls: along the wall at the same height
+            along = 2 if ax == 0 else 0
+            bg[m] = _stripe_median(lab[m], pts[m][:, along], pts[m][:, 1], cell, window, passes, outlier)
+    return bg, bg_alt, pid
+
+
+def _stripe_median(vals: np.ndarray, A: np.ndarray, C: np.ndarray, cell, window: float, passes: int,
+                   outlier: float) -> np.ndarray:
+    """Robust background for points with colours vals at plane coordinates
+    A (along the stripes) and C (across them): colours are averaged in cells
+    (cell[0] across x cell[1] along), and each cell's background is the
+    median of the cells within +-window along, at the same C. Repeated
+    without the cells that the previous pass found to be objects."""
+    import warnings
+
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    ci = np.floor((C - C.min()) / cell[0]).astype(int)
+    ai = np.floor((A - A.min()) / cell[1]).astype(int)
+    nC, nA = ci.max() + 1, ai.max() + 1
+    cnt = np.zeros((nC, nA))
+    acc = np.zeros((nC, nA, 3))
+    np.add.at(cnt, (ci, ai), 1)
+    np.add.at(acc, (ci, ai), vals)
+    G = np.full((nC, nA, 3), np.nan)
+    G[cnt > 0] = acc[cnt > 0] / cnt[cnt > 0][:, None]
+    win = max(1, int(window / cell[1]))
+    for _ in range(passes):
+        pad = np.pad(G, ((0, 0), (win, win), (0, 0)), constant_values=np.nan)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            B = np.nanmedian(sliding_window_view(pad, 2 * win + 1, axis=1), axis=-1)
+        G = np.where((np.linalg.norm(G - B, axis=-1) > outlier)[..., None], np.nan, G)
+    return B[ci, ai]
+
+
+def outlier_proposals(img: np.ndarray, bg: np.ndarray, bg_alt: np.ndarray, pid: np.ndarray, thr: float = 20.0,
+                      min_area: int = 100, core: float = 6.0, seam: int = 8):
+    """Regions that don't look like the empty room: connected components of
+    the pixels far (Lab distance) from the room background, cleaned with a
+    morphological open and close. Within seam px of a boundary between
+    planes, a floor or ceiling pixel must also differ from the alternative
+    (in-depth) background. Returns (mask, [(x, y, w, h)])."""
+    import cv2
+
+    lab = _to_lab(img)
+    d = np.nan_to_num(np.linalg.norm(lab - bg, axis=-1))
+    d_alt = np.linalg.norm(lab - bg_alt, axis=-1)
+    edge = np.zeros(pid.shape, np.uint8)
+    edge[:, 1:] |= pid[:, 1:] != pid[:, :-1]
+    edge[1:, :] |= pid[1:, :] != pid[:-1, :]
+    near = cv2.dilate(edge, np.ones((2 * seam + 1, 2 * seam + 1), np.uint8)) > 0
+    use_alt = near & np.isfinite(d_alt)
+    d = np.where(use_alt, np.minimum(d, np.nan_to_num(d_alt)), d)
+    m = (d > thr).astype(np.uint8)
+    k = np.ones((5, 5), np.uint8)
+    m = cv2.morphologyEx(cv2.morphologyEx(m, cv2.MORPH_OPEN, k), cv2.MORPH_CLOSE, k)
+    # Split regions joined by thin bridges (door frames, baseboards): seed
+    # from the thick cores (distance to the background > core px), then grow
+    # each core back out inside the mask.
+    dt = cv2.distanceTransform(m, cv2.DIST_L2, 5)
+    n, lab = cv2.connectedComponents((dt > core).astype(np.uint8), connectivity=8)
+    lab = lab.astype(np.int32)
+    k3 = np.ones((3, 3), np.uint8)
+    for _ in range(int(3 * core)):
+        grown = cv2.dilate(lab.astype(np.float32), k3).astype(np.int32)
+        lab = np.where((lab == 0) & (m > 0), grown, lab)
+    boxes = []
+    for i in range(1, n):
+        ys, xs = np.nonzero(lab == i)
+        if len(xs) >= min_area:
+            boxes.append((int(xs.min()), int(ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)))
+    return m.astype(bool), boxes
+
+
+def grabcut_region(img: np.ndarray, outlier: np.ndarray, box, iters: int = 5, pad: float = 0.15):
+    """GrabCut a proposal: inside its box the outlier pixels are probably
+    object and the rest probably background; a margin around the box is
+    definitely background. Returns (mask over the window, (X0, Y0))."""
+    import cv2
+
+    H, W = img.shape[:2]
+    x, y, w, h = box
+    px, py = int(pad * w) + 4, int(pad * h) + 4
+    X0, Y0 = max(0, x - 2 * px), max(0, y - 2 * py)
+    X1, Y1 = min(W, x + w + 2 * px), min(H, y + h + 2 * py)
+    crop = np.ascontiguousarray((np.clip(img[Y0:Y1, X0:X1], 0, 1) * 255).astype(np.uint8)[..., ::-1])
+    mask = np.full(crop.shape[:2], cv2.GC_BGD, np.uint8)
+    a0, b0 = max(0, y - py) - Y0, min(H, y + h + py) - Y0
+    a1, b1 = max(0, x - px) - X0, min(W, x + w + px) - X0
+    mask[a0:b0, a1:b1] = cv2.GC_PR_BGD
+    sub = outlier[Y0:Y1, X0:X1]
+    inner = np.zeros_like(sub)
+    inner[y - Y0:y - Y0 + h, x - X0:x - X0 + w] = True
+    mask[sub & inner] = cv2.GC_PR_FGD
+    if (mask == cv2.GC_PR_FGD).sum() < 20 or (mask == cv2.GC_BGD).sum() < 20:
+        return None, (X0, Y0)
+    bgd, fgd = np.zeros((1, 65)), np.zeros((1, 65))
+    try:
+        cv2.grabCut(crop, mask, None, bgd, fgd, iters, cv2.GC_INIT_WITH_MASK)
+    except cv2.error:
+        return None, (X0, Y0)
+    return (mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), (X0, Y0)
+
+
+def mirror_widths(lab: np.ndarray, fg: np.ndarray, c2: int, max_hw: int, tol: float = 18.0, gap: int = 2):
+    """Half-widths of the mirror-symmetric shape about the axis at column
+    c2 / 2 (c2 odd: between two pixels). On every row, walk outwards in both
+    directions while both pixels are object (fg) and their colours match
+    (Lab distance, lightness at half weight so one-sided lighting is
+    tolerated); stop at a mismatch that lasts more than gap pixels."""
+    H, W = fg.shape
+    d = np.arange(max_hw)
+    xl = (c2 - 1) // 2 - d if c2 % 2 else c2 // 2 - d
+    xr = (c2 + 1) // 2 + d if c2 % 2 else c2 // 2 + d
+    inb = (xl >= 0) & (xr < W)
+    d, xl, xr = d[inb], xl[inb], xr[inb]
+    if not len(d):
+        return np.zeros(H)
+    diff = lab[:, xl] - lab[:, xr]
+    diff[..., 0] *= 0.5
+    ok = fg[:, xl] & fg[:, xr] & (np.linalg.norm(diff, axis=-1) < tol)
+    # The shape ends at the first step that starts gap+1 consecutive failures
+    # (steps beyond the window count as failures).
+    bad = ~ok
+    run = bad.copy()
+    for k in range(1, gap + 1):
+        run[:, :-k] &= bad[:, k:]
+    run[:, -1] = True
+    first = np.argmax(run, axis=1)
+    hw = first.astype(float) + (0.5 if c2 % 2 else 0.0)
+    hw[~ok[:, 0]] = 0
+    return hw
+
+
+def symmetry_axes(lab: np.ndarray, fg: np.ndarray, max_axes: int = 3, min_frac: float = 0.35, max_hw: int = 120):
+    """Candidate vertical symmetry axes inside a mask: the local maxima over
+    the axis position of S = the area of the mirror-symmetric shape about it
+    (mirror_widths). Colour matters, so two touching objects of different
+    colours give two peaks. Returns [(axis column, half-width per row)]."""
+    H, W = fg.shape
+    cols = np.nonzero(fg.any(axis=0))[0]
+    if len(cols) < 3:
+        return []
+    c2s = np.arange(2 * cols[0], 2 * cols[-1] + 1)
+    widths = [mirror_widths(lab, fg, c2, max_hw) for c2 in c2s]
+    S = np.array([w.sum() for w in widths])
+    if S.max() <= 0:
+        return []
+    n = len(S)
+    peaks = [i for i in range(n) if S[i] > 0 and S[i] >= S[max(0, i - 1)] and S[i] >= S[min(n - 1, i + 1)]]
+    peaks.sort(key=lambda i: -S[i])
+    out = []
+    for i in peaks:
+        if S[i] < min_frac * S.max():
+            break
+        # A separate axis needs a real dip in S between it and the others.
+        if any(abs(i - o) < 6 or S[min(i, o):max(i, o) + 1].min() > 0.7 * min(S[i], S[o]) for o in out):
+            continue
+        out.append(i)
+        if len(out) == max_axes:
+            break
+    return [(c2s[i] / 2, widths[i]) for i in out]
+
+
+def mask_widths(fg: np.ndarray, c: float) -> np.ndarray:
+    """Per row, the half-width of the mask's run through column c, taking
+    the nearer of its two ends: something merged into one side (a hose,
+    a neighbouring object) doesn't widen the profile."""
+    H, W = fg.shape
+    xl, xr = int(np.floor(c)), int(np.ceil(c))
+    if xl < 0 or xr >= W:
+        return np.zeros(H)
+    left = np.zeros(H)
+    on = fg[:, xl].copy()
+    for x in range(xl, -1, -1):
+        on &= fg[:, x]
+        left += on
+    right = np.zeros(H)
+    on = fg[:, xr].copy()
+    for x in range(xr, W):
+        on &= fg[:, x]
+        right += on
+    hw = np.minimum(left, right) - (xr - xl) * 0.0
+    return np.where(fg[:, xl] & fg[:, xr], hw - 0.5 + (c - xl if xl == xr else 0.5), 0.0)
+
+
+def profile_block(hw: np.ndarray, min_rows: int = 8):
+    """The longest run of rows with a shape (half-width > 1), median
+    smoothed. Returns (rows, half_widths) or None."""
+    ok = hw > 1
+    best, start = (0, 0), None
+    for y in range(len(hw) + 1):
+        if y < len(hw) and ok[y]:
+            start = y if start is None else start
+        elif start is not None:
+            if y - start > best[1] - best[0]:
+                best = (start, y)
+            start = None
+    a, b = best
+    if b - a < min_rows:
+        return None
+    h = hw[a:b]
+    pad = np.pad(h, 2, mode="edge")
+    h = np.median(np.stack([pad[i:i + len(h)] for i in range(5)]), axis=0)
+    return np.arange(a, b), h
+
+
 def _viterbi_profile(score: np.ndarray, rows: np.ndarray, forced_rows, smooth: float, max_dk: int = 2):
     """Best path through rows: before (0 per row) -> inside at state k
     (score[i, k], width changes cost smooth * |dk|) -> after (0 per row).
@@ -340,58 +600,112 @@ def projected_outline(lathe, scene, s: float, shape):
     return pick(top), pick(bottom)
 
 
-def straight_edge_support(gy, vp, c: float, hw: float, y: float, thr: float, search: int) -> float:
+def straight_edge_support(gy, vp, c: float, hw: float, y: float, thr: float, search: int,
+                          continued: bool = True) -> float:
     """Best support for a straight edge crossing the axis column c near row
     y, over [c - hw, c + hw], that is either horizontal or runs to the
     vanishing point: the top or bottom edge of a flat rectangle facing the
-    camera (a poster, a box front) or on a side wall (a door, a panel)."""
-    xs = np.linspace(c - hw, c + hw, max(6, int(2 * hw)))
+    camera (a poster, a box front) or on a side wall (a door, a panel).
+    Support counts only where the line does not carry on past the object's
+    sides (continued=True subtracts the support of its continuation)."""
+    n = max(6, int(2 * hw))
+    xs = np.linspace(c - hw, c + hw, n)
+    # The same line continued past both sides: a flat object's edge stops at
+    # its sides, a background line (a baseboard, a shelf) runs on behind it.
+    gap = max(2.0, 0.15 * hw)
+    out_l = np.linspace(c - 2 * hw - gap, c - hw - gap, n // 2)
+    out_r = np.linspace(c + hw + gap, c + 2 * hw + gap, n // 2)
     best = 0.0
     for y_c in np.arange(y - search, y + search + 1):
         slopes = [0.0]
         if abs(c - vp[0]) > 1e-6:
             slopes.append((y_c - vp[1]) / (c - vp[0]))
         for slope in slopes:
-            ys = y_c + slope * (xs - c)
-            best = max(best, curve_support(gy, xs, ys, thr, shifts=0))
+            on = curve_support(gy, xs, y_c + slope * (xs - c), thr, shifts=0)
+            if continued:
+                beyond = max(curve_support(gy, o, y_c + slope * (o - c), thr, shifts=0) for o in (out_l, out_r))
+                on -= beyond
+            best = max(best, on)
     return best
 
 
 # --------------------------------------------------------------------------- main
 def find_solids(image: np.ndarray, scene, max_side: int = 800, min_height_px: int = 24,
                 size_range=(0.12, 2.2), max_radius: float = 0.6, max_candidates: int = 60, min_outline: float = 0.5,
-                debug: list | None = None) -> list[Solid]:
+                min_sides: float = 0.5, min_halfwidth_px: float = 8.0, debug: list | None = None, proposals: str | None = None) -> list[Solid]:
     """Detect upright surfaces of revolution in a photo whose room geometry
-    (scene, from geometry.build_scene) is known. Returns full-res Solids."""
+    (scene, from geometry.build_scene) is known. Returns full-res Solids.
+
+    proposals: "room" (default when OpenCV is installed): regions that differ
+    from the empty-room background, traced with OpenCV's GrabCut, axes from
+    the mask's symmetry. "seeds" (pure numpy): mirror-symmetric edge pairs,
+    traced with symmetric_grabcut."""
     from .geometry import solid_geometry
+
+    if proposals is None:
+        try:
+            import cv2  # noqa: F401
+            proposals = "room"
+        except ImportError:
+            proposals = "seeds"
 
     small, s = downscale(image, max_side)
     Hs, Ws = small.shape[:2]
     gx, gy = color_gradients(small, 1.0)
-    pairs = symmetric_pairs(gx, gy, w_range=(6, int(0.25 * Ws)))
-    seeds = axis_seeds(pairs, Ws)
     to_full = lambda v: (np.asarray(v, float) + 0.5) / s - 0.5  # noqa: E731
     floor_y = scene.yf
+    gmag = np.linalg.norm(gx, axis=-1)
+
+    def side_strength(c, rows, hw):
+        """Per row, the weaker of the two sides' edge strengths (best within
+        a pixel of the traced side)."""
+        out = []
+        for side in (-1, 1):
+            xs = c + side * hw
+            xi = np.clip(np.round(xs[:, None] + np.arange(-1, 2)).astype(int), 0, Ws - 1)
+            out.append(gmag[rows[:, None], xi].max(axis=1))
+        return np.minimum(*out)
 
     cands = []
-    taken = []  # (c, y0, y1) of traced profiles, to skip duplicate seeds
-    for c2, y0, y1, nrows, chain in seeds:
-        c = c2 / 2
-        if any(abs(c - tc) <= 1.5 and y0 >= ty0 - 2 and y1 <= ty1 + 2 for tc, ty0, ty1 in taken):
-            continue
-        seg = pairs[(np.abs(pairs[:, 1] - c2) <= 1) & (pairs[:, 0] >= y0) & (pairs[:, 0] <= y1)]
-        level = float(np.median(seg[:, 3]))
-        w_max = min(c, Ws - 1 - c, 0.15 * Ws)
-        if w_max < 4:
-            continue
-        r = symmetric_grabcut(small, gx, c, chain, w_max)
-        if r is None:
-            continue
-        rows, hw = r
-        taken.append((c, rows[0], rows[-1]))
-        if len(hw) < max(8, min_height_px * s):
-            continue
-        cands.append(dict(c=c, rows=rows, hw=hw, score=float(len(rows)), level=level))
+    if proposals == "room":
+        outlier, boxes = outlier_proposals(small, *room_background(small, scene, s))
+        for box in boxes:
+            fg, (X0, Y0) = grabcut_region(small, outlier, box)
+            if fg is None:
+                continue
+            lab = _to_lab(small[Y0:Y0 + fg.shape[0], X0:X0 + fg.shape[1]])
+            for a, _ in symmetry_axes(lab, fg):
+                r = profile_block(mask_widths(fg, a))
+                if r is None:
+                    continue
+                rows, hw = r
+                c, rows = a + X0, rows + Y0
+                if len(hw) < max(8, min_height_px * s) or hw.max() < min_halfwidth_px:
+                    continue  # too few pixels to judge roundness
+                strength = side_strength(c, rows, hw)
+                level = float(np.median(strength))
+                cands.append(dict(c=c, rows=rows, hw=hw, score=float(len(rows)), level=level,
+                                  sides=float(np.mean(strength > 0.05))))
+    else:
+        pairs = symmetric_pairs(gx, gy, w_range=(6, int(0.25 * Ws)))
+        taken = []  # (c, y0, y1) of traced profiles, to skip duplicate seeds
+        for c2, y0, y1, nrows, chain in axis_seeds(pairs, Ws):
+            c = c2 / 2
+            if any(abs(c - tc) <= 1.5 and y0 >= ty0 - 2 and y1 <= ty1 + 2 for tc, ty0, ty1 in taken):
+                continue
+            seg = pairs[(np.abs(pairs[:, 1] - c2) <= 1) & (pairs[:, 0] >= y0) & (pairs[:, 0] <= y1)]
+            level = float(np.median(seg[:, 3]))
+            w_max = min(c, Ws - 1 - c, 0.15 * Ws)
+            if w_max < 4:
+                continue
+            r = symmetric_grabcut(small, gx, c, chain, w_max)
+            if r is None:
+                continue
+            rows, hw = r
+            taken.append((c, rows[0], rows[-1]))
+            if len(hw) < max(8, min_height_px * s):
+                continue
+            cands.append(dict(c=c, rows=rows, hw=hw, score=float(len(rows)), level=level, sides=1.0))
 
     found = []
     for cd in cands:
@@ -405,7 +719,12 @@ def find_solids(image: np.ndarray, scene, max_side: int = 800, min_height_px: in
         ru, rd = side_extent(gx, c + hw[0], rows[0], rows[-1], thr, reach)
         lu_b, ld_b = side_extent(gx, c - hw[-1], rows[0], rows[-1], thr, reach)
         ru_b, rd_b = side_extent(gx, c + hw[-1], rows[0], rows[-1], thr, reach)
-        if abs(lu - ru) > tol or abs(ld_b - rd_b) > tol:
+        if cd["sides"] < min_sides:
+            why = f"sides not on image edges ({cd['sides']:.0%})"
+        # A rectangle receding along a side wall has its near side taller at
+        # both ends; a solid's sides end together (an attachment may run on
+        # past one end, like a hose below an extinguisher).
+        elif (lu - ru > tol and ld_b - rd_b > tol) or (ru - lu > tol and rd_b - ld_b > tol):
             why = f"sides end unevenly (top {lu}/{ru}, bottom {ld_b}/{rd_b})"
         prof = [[float(to_full(y)), float(to_full(c - w)), float(to_full(c + w))] for y, w in zip(rows, hw)]
         sol = Solid("solid", prof, "floor")

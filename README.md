@@ -4,7 +4,7 @@ CS180 final project: turn a single interior photograph into a scene you can step
 
 The starting point is **Tour Into the Picture** (TIP; Horry, Anjyo & Arai, SIGGRAPH 1997). The room is a textured box (back wall, floor, ceiling, left and right walls), and foreground objects are flat cutouts standing at their estimated depth. When the camera moves, it reveals regions the photo never saw. The project's research question is how to fill those: later we will add diffusion inpainting on the rectified wall and floor textures and compare it against inpainting the original photo directly.
 
-**Status:** TIP baseline working on the hallway scene: a chain of 7 boxes runs from the camera through the doorway to the corridor's end wall. Holes are shown, and a simple push-pull fill is available. Automatic annotation detects the vanishing point, the back wall, the deeper boxes down the corridor and room-aligned furniture (cabinets, desks) as 3D boxes. An interactive editor lets you adjust the result. Diffusion completion is not started.
+**Status:** TIP baseline working on the hallway scene: a chain of 7 boxes runs from the camera through the doorway to the corridor's end wall. Holes are shown, and a simple push-pull fill is available. Automatic annotation detects the vanishing point, the back wall, the deeper boxes down the corridor, room-aligned furniture (cabinets, desks) as 3D boxes, and round objects (vases, extinguishers) as 3D surfaces of revolution. An interactive editor lets you adjust the result. Diffusion completion is not started.
 
 | Hand annotation (7 boxes) | Automatic annotation (3 boxes) | Novel views (top: holes in magenta, bottom: push-pull fill) |
 |---|---|---|
@@ -20,14 +20,18 @@ Camera sweep with the simple fill: [`outputs/hallway/sweep.gif`](outputs/hallway
 
 <img src="outputs/furnished_room/objects_demo.jpg" width="820">
 
-On the hallway photo, the one room-aligned object is the gray trash bin 27 m down the corridor. It's only about 18×39 px and tapered, too small for automatic detection, so it was added in the editor with `o`. Its depth comes from where its bottom meets the floor. Walking down the corridor, it stands out from the wall as a box and uncovers the floor and wall behind it. The extinguishers are round and wall-mounted, so they stay flat cutouts.
+On the hallway photo, the one room-aligned object is the gray trash bin 27 m down the corridor. It's only about 18×39 px and tapered, too small for automatic detection, so it was added in the editor with `o`. Its depth comes from where its bottom meets the floor. Walking down the corridor, it stands out from the wall as a box and uncovers the floor and wall behind it.
 
 <img src="outputs/hallway/trash_bin_object.jpg" width="820">
+
+**Solids (surfaces of revolution).** Round objects with a vertical axis are found automatically and rebuilt as 3D lathe meshes. On the hallway both fire extinguishers are found, with no false positives and no hand input. The panels show the empty-room background predicted from the room geometry, the regions that differ from it, the traced silhouettes, and a novel view where the extinguishers stand off the wall and uncover holes (`python scripts/solids_figure.py data/annotations/hallway_auto.json`):
+
+<img src="outputs/hallway/solids_auto.jpg" width="820">
 
 ## Quick start
 
 ```bash
-pip install -r requirements.txt          # numpy, pillow, matplotlib
+pip install -r requirements.txt          # numpy, pillow, matplotlib, opencv-python-headless (GrabCut)
 
 # 1. Build the scene (geometry + per-plane textures) for the viewer
 python scripts/build_scene.py data/annotations/hallway.json
@@ -42,7 +46,7 @@ python scripts/face_textures.py data/annotations/hallway.json   # rectified, unf
 
 # Tests
 python tests/test_tip.py                 # geometry + rendering
-python tests/test_annotation_tools.py    # auto-annotation (VP, back wall, deeper boxes, objects) + editor, ~1.5 min
+python tests/test_annotation_tools.py    # auto-annotation (VP, back wall, deeper boxes, objects, solids) + editor, ~2 min
 ```
 
 **Viewer controls:** drag to move sideways and up/down · scroll or `W`/`S` to walk forward and back (go through the doorway and down the corridor) · `A`/`D` strafe · `Q`/`E` up/down · hold `Shift` to run · `Shift`+drag to look around · `F` toggles the simple fill · `G` toggles the foreground · `H` shows box edges · `Space` wiggles · `R` resets. Holes (no photo data) show in magenta.
@@ -115,13 +119,15 @@ Good photos have one-point perspective (looking straight down the room), visible
 2. **Boxes.** The back-wall rectangle is placed at depth `D`, chosen so the floor sits `camera_height` below the camera. Floor, ceiling and side walls run from the back wall toward the camera, out to where they leave the image ([`tip/geometry.py`](tip/geometry.py)). Each extra `segments` box continues behind the previous one. Its depth comes from its rectangle's bottom edge on the floor, and the previous back wall is split into bands around the opening, so the hallway becomes 7 boxes: room → door frame → 5 corridor stretches → end wall, about 49 m away.
 3. **Textures.** For every texel on every plane, we find its 3D point, project it into the photo and sample bilinearly (inverse mapping, so there are no gaps). This removes the perspective distortion: each wall and floor becomes a flat, front-on image, which is where completion will happen. Texels that fall outside the photo, inside a foreground object, or where another plane hides this one in the photo (found with a plane-ID buffer from the input camera) get `alpha = 0`; these are the holes ([`tip/textures.py`](tip/textures.py)).
 4. **Objects.** Each room-aligned object becomes a small box (front, sides, top, back) from its floor contact rows. Its faces are ordinary textured planes, so it hides what's behind it in the photo (those texels become holes) and moves with correct parallax.
-5. **Solids (in progress).** Surfaces of revolution with a vertical axis (vases, bins, extinguishers) are a `solids` entry: a symmetric silhouette, one row per image row. A circle of radius r whose axis lies at horizontal distance D, in direction β, is seen between the rays at β ± α with sin α = r/D. So every silhouette row gives a radius once D is known. D comes from the floor (the lowest point is the near edge of the base) or from the side wall the object hangs on (its outer edge touches the wall). The solid becomes a lathe mesh (`Lathe` in [`tip/geometry.py`](tip/geometry.py); three.js `LatheGeometry` in the viewer). Its front is textured from the photo, and its unseen back is the front mirrored through the silhouette plane. The automatic detector ([`tip/revolve.py`](tip/revolve.py)) is fully classical:
-   - mirrored colour-gradient edge pairs vote for vertical symmetry axes;
-   - a GrabCut-style loop traces each silhouette, alternating colour-mixture fits with a symmetric-profile Viterbi in place of the graph cut;
-   - room-geometry checks: floor or wall mount, plausible real size, fit inside the room, both sides ending together;
-   - a rival-hypothesis test: the top and bottom outline must match the projected rim ellipses better than the straight edges of a flat rectangle (horizontal, or receding to the VP).
+5. **Solids.** Surfaces of revolution with a vertical axis (vases, bins, extinguishers) are a `solids` entry: a symmetric silhouette, one row per image row. A circle of radius r whose axis lies at horizontal distance D, in direction β, is seen between the rays at β ± α with sin α = r/D. So every silhouette row gives a radius once D is known. D comes from the floor (the lowest point is the near edge of the base) or from the side wall the object hangs on (its outer edge touches the wall). The solid becomes a lathe mesh (`Lathe` in [`tip/geometry.py`](tip/geometry.py); three.js `LatheGeometry` in the viewer). Its front is textured from the photo, and its unseen back is the front mirrored through the silhouette plane. The detector ([`tip/revolve.py`](tip/revolve.py), run by `auto_annotate`) is classical computer vision that builds on the room geometry:
+   - **Empty-room background.** Room surfaces are stripes running along the room. A wall's paint and baseboard depend only on height, so each pixel's background is the median of its wall's colours at the same height within ±2 m along the wall. On the floor and ceiling the median runs across the room instead, because a floor object hides a long stretch of floor in depth but only its own width across. The median is taken twice, the second time without the cells the first pass flagged as objects. Near room seams, where the fitted geometry is a few pixels off, a floor pixel must also differ from the in-depth median, which knows where the baseboard is.
+   - **Proposals.** Pixels far from that background (Lab distance) are opened and closed. Regions joined by thin bridges (door frames, baseboards) are split with a distance-transform marker growing step.
+   - **Tracing.** OpenCV's GrabCut is seeded from each proposal: outlier pixels are "probably object", the rest of the box "probably background". It is a free-form 2D cut, so labels, straps and tags stay inside the object.
+   - **Axes.** A mirror-colour symmetry score is computed for each candidate axis: mirrored pixels must both be object and have matching colour. Touching objects of different colours (the yellow and red extinguishers merge into one GrabCut mask) give separate peaks. The width on each row is the nearer side of the mask, so something merged onto one side (the hose, the neighbouring extinguisher) doesn't widen it.
+   - **Room checks:** floor or wall mount, plausible real size, fit inside the room, image edges along both sides, sides that end together (a door receding along a side wall has its near side taller at both ends), and at least 16 px wide.
+   - **Round vs. flat.** The top and bottom outline must match the projected rim ellipses better than the straight edges of a flat rectangle (horizontal, or receding to the VP). A straight line only counts if it stops at the object's sides; a background line that runs on behind it (the baseboard behind the extinguishers) does not.
 
-   On synthetic rooms it finds a floor vase and a wall-hung cylinder to within a few cm, with no false positives from doors, posters or furniture. On the hallway photo it is not reliable yet: labels, straps and the hose break up the extinguishers' outlines, and the poster board and door frames produce false positives. So it is not part of `auto_annotate` yet.
+   On the hallway (auto or hand room geometry) it finds exactly the two extinguishers in about 12 s at 800 px. On synthetic rooms it finds a floor vase and a wall-hung cylinder to within a few cm, with no false positives from doors, posters or furniture. Without OpenCV, `find_solids(..., proposals="seeds")` is a pure-NumPy fallback: mirrored colour-gradient edge pairs vote for axes, and a GrabCut-style loop with a symmetric-profile Viterbi in place of the graph cut traces them. It works on synthetic rooms, but not on cluttered photos.
 6. **Foreground.** Each outlined object becomes a billboard parallel to the image plane. Its depth comes from where its bottom meets the floor. Like classic TIP, billboards draw on top of the box.
 7. **Rendering.** [`viewer/index.html`](viewer/index.html) uses three.js, with `setViewOffset` to reproduce the off-center principal point. [`tip/render.py`](tip/render.py) is a NumPy ray-caster that produces the same views for figures and tests. From the original camera it reproduces the input photo (checked in `tests/test_tip.py`).
 8. **Simple fill baseline.** `push_pull_fill` fills holes from a weighted image pyramid. It gives smooth color with no texture or line continuation, the "simple filling" baseline from the proposal.
@@ -143,9 +149,9 @@ Good photos have one-point perspective (looking straight down the room), visible
 ```
 tip/            library: annotations, geometry, textures (+ push-pull fill), renderer, export,
                 auto_annotate (VP, back wall, deeper boxes, objects), revolve (solids: surfaces of
-                revolution, WIP), editor (interactive annotation)
+                revolution), editor (interactive annotation)
 scripts/        annotate.py · show_annotation.py · build_scene.py · render_views.py · face_textures.py
-                synthetic_demo.py (furnished test room with known geometry)
+                synthetic_demo.py (furnished test room with known geometry) · solids_figure.py
 viewer/         three.js interactive viewer (loads scenes/<name>/scene.json)
 data/images/    input photos
 data/annotations/  per-scene annotation JSON
@@ -159,14 +165,16 @@ tests/          test_tip.py (geometry/rendering) · test_annotation_tools.py (de
 
 - Assumes one-point perspective and box-shaped segments. Alcoves and side doors are flattened onto the walls.
 - No lens-distortion correction. On the hallway the room edges are straight to within about 1–2 px (iPhones correct distortion in-camera). Also, radial distortion leaves lines through the image center straight, and TIP's room edges all run through the VP near the center. So even a 15% barrel distortion moves the detected VP by only about 2 px (tested on synthetic rooms). Distortion would only slightly warp wall textures near the photo borders. It would matter for fisheye/GoPro-style lenses or VPs far off-center.
-- Foreground objects are flat cutouts. Big sideways moves reveal that they're cards. Only furniture square to the room becomes a 3D box; a turned chair or an angled desk stays a cutout.
+- Foreground objects are flat cutouts. Big sideways moves reveal that they're cards. Only furniture square to the room becomes a 3D box and only upright round objects become solids; a turned chair or an angled desk stays a cutout.
+- Solids are upright (no tilt), and a wall-hung solid is assumed to touch the wall. The yellow extinguisher hangs off a bracket and leans; with the auto room geometry the mount test calls it floor-standing, so it sits a few cm off. Small objects (under about 16 px wide at 800 px) are not judged.
 - Object detection needs the front face's outline to be mostly visible (not hidden behind something else). Its depth comes from the receding edges, so a box whose side matches the background in color can come out too shallow.
 - The photo has no data close to the camera along the side walls, so even a small sideways step reveals large holes there (see the left/right views).
 - The focal length is an assumption (26 mm equivalent), not calibrated.
 
 ## Next steps
 
-- [ ] Solids on real photos: a cleaner silhouette tracer (OpenCV GrabCut, or SAM only for tracing a proposed shape), then wire `find_solids` into `auto_annotate`
+- [x] Solids on real photos: OpenCV GrabCut on room-background proposals, wired into `auto_annotate`
+- [ ] Solids: tilted axes, and SAM as a fallback tracer for shapes GrabCut can't separate
 - [ ] Diffusion inpainting on the rectified plane textures vs. on the original photo (the main experiment)
 - [ ] Photograph about 6 scenes, plus held-out nearby views for evaluation
 - [ ] Hole/seam/line-continuity comparison: unfilled vs. push-pull vs. diffusion

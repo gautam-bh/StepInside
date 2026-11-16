@@ -302,7 +302,11 @@ def test_solids_detected():
     axis position, size and height."""
     vp, bw, scene, solids = _solid_room()
     img = synthetic_room(vp, bw, solids=solids)
-    found = find_solids(img, scene)
+    for proposals in ("room", "seeds"):  # OpenCV GrabCut path, and the pure-numpy one
+        _check_solids(find_solids(img, scene, proposals=proposals), solids, scene)
+
+
+def _check_solids(found, solids, scene):
     assert len(found) == 2, [(s.name, s.mount) for s in found]
     for (truth, _), mount in zip(solids, ("floor", "wall")):
         est = min((solid_surface(s, scene) for s in found), key=lambda L: np.hypot(L.ax - truth.ax, L.az - truth.az))
