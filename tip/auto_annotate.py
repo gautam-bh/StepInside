@@ -870,6 +870,26 @@ def add_solids(ann: Annotation, image: np.ndarray) -> Annotation:
     return ann
 
 
+def add_wall_things(ann: Annotation, image: np.ndarray) -> Annotation:
+    """Detect boxes fixed to the walls or ceiling (signs, alarm boxes) and
+    pipes under the ceiling (tip.relief), and store them as ann.reliefs and
+    ann.tubes. Shares the room background and proposals between the two."""
+    from .geometry import build_scene
+    from .relief import find_reliefs, find_tubes
+    from .revolve import outlier_proposals, room_background
+
+    ann.reliefs, ann.tubes = [], []
+    solids, ann.solids = ann.solids, []
+    scene = build_scene(ann, image.shape[1], image.shape[0])
+    ann.solids = solids
+    small, s = downscale(image, 800)
+    bg, bg_alt, pid = room_background(small, scene, s)
+    outlier, boxes, labels = outlier_proposals(small, bg, bg_alt, pid, labels=True)
+    ann.reliefs = find_reliefs(image, scene, proposals=(outlier, boxes, labels, pid), solids=solids)
+    ann.tubes = find_tubes(image, scene, proposals=(bg, pid))
+    return ann
+
+
 def auto_annotate(image_path: str, image: np.ndarray | None = None, solids: bool = True, **kw) -> Annotation:
     if image is None:
         from .textures import load_image
@@ -887,4 +907,5 @@ def auto_annotate(image_path: str, image: np.ndarray | None = None, solids: bool
         except ImportError:
             return ann
         add_solids(ann, image)
+        add_wall_things(ann, image)
     return ann

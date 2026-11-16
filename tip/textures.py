@@ -79,7 +79,7 @@ def visible_plane_ids(scene: Scene) -> np.ndarray:
     best_t = np.full(u.shape, np.inf)
     ids = np.full(u.shape, -1, dtype=np.int32)
     for i, plane in enumerate(scene.planes):
-        if plane.kind not in ("box", "lathe"):
+        if plane.kind not in ("box", "lathe", "tube"):
             continue
         t, _, _, valid = _hit(plane, cam, dirs)
         closer = valid & (t < best_t)
@@ -114,7 +114,11 @@ def box_texture(plane: Plane, scene: Scene, image: np.ndarray, fg_mask: np.ndarr
         valid &= (plane.normal(S, T) * -plane.point(S, T)).sum(-1) > 0
     alpha = valid.astype(np.float32)[..., None]
     out = np.concatenate([rgb * alpha, alpha], axis=-1).astype(np.float32)
-    if hasattr(plane, "normal"):
+    if hasattr(plane, "mirror_cols"):
+        src = plane.mirror_cols(cols)
+        mirrored = out[:, src]
+        out = np.where((out[..., 3:4] < 0.5) & (mirrored[..., 3:4] > 0.5), mirrored, out)
+    elif hasattr(plane, "normal"):
         out = mirror_fill(out, plane)
     return out
 
@@ -194,7 +198,7 @@ def extract_textures(scene: Scene, image: np.ndarray, foreground_polys, max_res:
     fg_iter = iter(foreground_polys)
     ids = visible_plane_ids(scene)
     for i, plane in enumerate(scene.planes):
-        if plane.kind in ("box", "lathe"):
+        if plane.kind in ("box", "lathe", "tube"):
             textures[plane.name] = box_texture(plane, scene, image, fg_mask, max_res, ids, i)
         else:
             textures[plane.name] = foreground_texture(next(fg_iter), image)

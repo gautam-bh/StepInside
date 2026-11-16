@@ -28,14 +28,15 @@ from tip.auto_annotate import (  # noqa: E402
     to_gray,
 )
 from tip.editor import AnnotationEditor  # noqa: E402
-from tip.geometry import Lathe, solid_surface  # noqa: E402
+from tip.geometry import Cylinder, Lathe, cuboid_planes, relief_box, solid_surface, tube_geometry  # noqa: E402
+from tip.relief import find_reliefs, find_tubes  # noqa: E402
 from tip.render import render_view  # noqa: E402
 from tip.revolve import find_solids  # noqa: E402
 from tip.textures import extract_textures, load_image  # noqa: E402
 
 
 # --------------------------------------------------------------------------- synthetic rooms
-def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=(), objects=(), decor=False, solids=()):
+def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=(), objects=(), decor=False, solids=(), extras=()):
     """Render a box room with plain-coloured, slightly noisy surfaces and a
     tiled floor, with known VP and back wall.
 
@@ -45,14 +46,16 @@ def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=(), objects=
     objects: RoomObjects (dark boxes, with drawer lines on the front).
     decor: add a poster on the back wall and a door on the left wall:
     rectangles that are *not* room-aligned objects.
-    solids: (Lathe, rgb) surfaces of revolution, shaded darker away from the
-    camera so they look round."""
+    solids: (Lathe or Cylinder, rgb) round surfaces, shaded darker away from
+    the camera so they look round.
+    extras: (Plane, rgb) flat faces in plain colours (boxes on the walls)."""
     w, h = size
     ann = Annotation(image="synthetic", vanishing_point=vp, back_wall=back_wall, segments=[list(r) for r in segments],
                      objects=list(objects))
     scene = build_scene(ann, w, h)
-    scene.planes += [lathe for lathe, _ in solids]
+    scene.planes += [lathe for lathe, _ in solids] + [pl for pl, _ in extras]
     colors = {lathe.name: rgb for lathe, rgb in solids}
+    flat = {pl.name: rgb for pl, rgb in extras}
     rng = np.random.default_rng(seed)
     shade = {"floor": 0.55, "ceiling": 0.22, "left": 0.85, "right": 0.75, "back": 0.66}
     obj_shade = {"front": 0.32, "left": 0.2, "right": 0.2, "top": 0.42, "back": 0.3}  # dark wood
@@ -63,6 +66,13 @@ def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=(), objects=
             phi = 2 * np.pi * (np.arange(n) + 0.5) / n
             t = np.ones((n, n, 3), np.float32) * np.asarray(colors[p.name], np.float32)
             t *= (0.75 + 0.25 * np.cos(phi))[None, :, None]
+            t += rng.normal(0, 0.005, t.shape).astype(np.float32)
+            tex[p.name] = np.concatenate([np.clip(t, 0, 1), np.ones((n, n, 1), np.float32)], axis=-1)
+            continue
+        if p.name in flat:
+            n = 64
+            t = np.ones((n, n, 3), np.float32) * np.asarray(flat[p.name], np.float32)
+            t *= {0: 0.8, 1: 1.0, 2: 0.9}[p.normal_axis]  # faces of a box differ in shade
             t += rng.normal(0, 0.005, t.shape).astype(np.float32)
             tex[p.name] = np.concatenate([np.clip(t, 0, 1), np.ones((n, n, 1), np.float32)], axis=-1)
             continue
@@ -355,6 +365,76 @@ def test_solids_are_round_3d_surfaces():
 
 
 # --------------------------------------------------------------------------- editor
+def _wall_things_room():
+    """CASES[0] with an alarm box on the right wall, a sign sticking out of the
+    left wall, a sign hanging from the ceiling, a flat poster on the right
+    wall, and two pipes under the ceiling. Returns the scene, the rendered
+    image, the true boxes {wall: (lo, hi)} and the true pipes."""
+    vp, bw = CASES[0]
+    scene = build_scene(Annotation(image="s", vanishing_point=vp, back_wall=bw), 600, 800)
+    b = scene.boxes[0]
+    boxes = {
+        "right": ((b.xr - 0.1, 0.1, 3.0), (b.xr, 0.4, 3.4)),  # alarm box, 10 cm deep
+        "left": ((b.xl, 0.5, 3.2), (b.xl + 0.3, 0.8, 3.22)),  # sign, 30 cm out of the wall
+        "ceiling": ((-0.2, b.yc - 0.22, 4.0), (0.15, b.yc, 4.03)),  # hanging sign
+    }
+    colours = {"right": (0.8, 0.1, 0.1), "left": (0.1, 0.55, 0.2), "ceiling": (0.1, 0.6, 0.25)}
+    skip = {"right": "+x", "left": "-x", "ceiling": "+y"}
+    extras = []
+    for wall, (lo, hi) in boxes.items():
+        extras += [(pl, colours[wall]) for pl in cuboid_planes(f"x_{wall}_", lo, hi, skip=(skip[wall],))]
+    poster = cuboid_planes("x_poster_", (b.xr - 0.002, -0.3, 4.0), (b.xr, 0.3, 4.6))
+    extras += [(pl, (0.2, 0.3, 0.8)) for pl in poster if pl.name.endswith("_left")]
+    pipes = [Cylinder("p1", 0.35, b.yc - 0.05, 0.05, 0.3, b.z1), Cylinder("p2", -0.5, b.yc - 0.035, 0.035, 0.3, b.z1)]
+    img = synthetic_room(vp, bw, solids=[(c, (0.6, 0.65, 0.75)) for c in pipes], extras=extras)
+    return scene, img, boxes, pipes
+
+
+def test_wall_boxes_detected():
+    """Boxes fixed to the walls and ceiling are found with the right wall,
+    depth, size and thickness; a flat poster is left on the wall."""
+    scene, img, boxes, _ = _wall_things_room()
+    found = find_reliefs(img, scene)
+    assert sorted(r.wall for r in found) == ["ceiling", "left", "right"], found
+    for r in found:
+        lo, hi = relief_box(r, scene)
+        tlo, thi = map(np.asarray, boxes[r.wall])
+        assert np.abs(lo - tlo).max() < 0.04 and np.abs(hi - thi).max() < 0.04, (r.wall, lo, hi, tlo, thi)
+
+
+def test_ceiling_pipes_detected():
+    """Pipes along the room under the ceiling are found with their position and radius."""
+    scene, img, _, pipes = _wall_things_room()
+    found = find_tubes(img, scene)
+    assert len(found) == 2, found
+    for est in (tube_geometry(t, scene) for t in found):
+        truth = min(pipes, key=lambda c: abs(c.cx - est[0]))
+        assert abs(est[0] - truth.cx) < 0.04 and abs(est[1] - truth.cy) < 0.03, (est, truth)
+        assert abs(est[2] - truth.r) < 0.015, (est[2], truth.r)
+
+
+def test_wall_things_are_3d():
+    """Detected wall boxes and pipes reproduce the photo from the input
+    camera; moving sideways reveals the wall behind them (holes)."""
+    scene0, img, _, _ = _wall_things_room()
+    vp, bw = CASES[0]
+    ann = Annotation(image="s", vanishing_point=vp, back_wall=bw, reliefs=find_reliefs(img, scene0),
+                     tubes=find_tubes(img, scene0))
+    scene = build_scene(ann, 600, 800)
+    tex = extract_textures(scene, img, [])
+    rgb, hole = render_view(scene, tex)
+    assert np.abs(rgb - img).mean() < 0.01 and hole.mean() < 0.01
+    _, hole2 = render_view(scene, tex, position=(0.4, -0.3, 1.0))
+    assert hole2.mean() > hole.mean() + 0.002
+
+
+def test_no_wall_things_in_empty_rooms():
+    for vp, bw in CASES:
+        img = synthetic_room(vp, bw, decor=True)
+        scene = build_scene(Annotation(image="s", vanishing_point=vp, back_wall=bw), 600, 800)
+        assert find_reliefs(img, scene) == [] and find_tubes(img, scene) == []
+
+
 def _editor(tmp=None):
     ann = Annotation(image="x.jpg", vanishing_point=(300, 420), back_wall=(200, 300, 420, 560))
     return AnnotationEditor(ann, (600, 800), out_path=tmp)

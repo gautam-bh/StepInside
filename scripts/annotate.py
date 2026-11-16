@@ -77,6 +77,15 @@ def main():
             add_solids(ann, image)
             for sol in ann.solids:
                 print(f"  {sol.name}: {sol.mount}-mounted, rows {sol.profile[0][0]:.0f}-{sol.profile[-1][0]:.0f}")
+            from tip.auto_annotate import add_wall_things
+
+            print("detecting wall/ceiling boxes and ceiling pipes ...")
+            add_wall_things(ann, image)
+            for rl in ann.reliefs:
+                print(f"  {rl.name}: on the {rl.wall}, contact {rl.contact:.0f}, front {rl.front:.0f}, far {rl.far:.0f}")
+            for t in ann.tubes:
+                print(f"  {t.name}: near {t.near[0]:.0f},{t.near[1]:.0f} far {t.far[0]:.0f},{t.far[1]:.0f}, "
+                      f"half-angle {t.half_angle * 57.3:.2f} deg")
 
     out.parent.mkdir(parents=True, exist_ok=True)
     if a.auto_only:

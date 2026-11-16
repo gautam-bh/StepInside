@@ -28,7 +28,7 @@ def rotation(yaw_deg: float = 0.0, pitch_deg: float = 0.0) -> np.ndarray:
 
 def _hit(plane: Plane, cam: np.ndarray, dirs: np.ndarray):
     """Ray/rectangle intersection. Returns (t, s, tt, valid)."""
-    if hasattr(plane, "hit"):  # a Lathe (surface of revolution)
+    if hasattr(plane, "hit"):  # a Lathe (surface of revolution) or a Cylinder
         return plane.hit(cam, dirs)
     k = plane.normal_axis
     c = plane.origin[k]
@@ -76,7 +76,7 @@ def render_view(
     color = np.zeros((H, W, 3))
     alpha = np.zeros((H, W))
     for plane in scene.planes:
-        if plane.kind not in ("box", "lathe"):
+        if plane.kind not in ("box", "lathe", "tube"):
             continue
         t, s, tt, valid = _hit(plane, cam, dirs)
         closer = valid & (t < best_t)

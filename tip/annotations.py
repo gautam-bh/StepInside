@@ -59,6 +59,53 @@ class Solid:
 
 
 @dataclass
+class Relief:
+    """A box fixed to a side wall or the ceiling: a sign sticking out of the
+    wall, an alarm box, a speaker, a sign hanging from the ceiling. Found
+    automatically by tip.relief.
+
+    The box is described by what the photo shows of it, in image pixels, so
+    it follows the room if the room changes. Image coordinates are measured
+    across the wall: x (columns) for a side wall, y (rows) for the ceiling.
+
+    wall: "left", "right" or "ceiling", the surface it is fixed to.
+    contact: where its near end meets the wall (the outer edge of its near
+        face). This fixes its depth.
+    front: the inner edge of its near face (the front corner). contact - front
+        is how far it sticks out, as seen at its near end.
+    far: the inner edge of its far end (front face's far corner). Equal to
+        front for a thin sign that faces the camera.
+    span: [lo, hi] extent of its near face along the wall: rows for a side
+        wall, columns for the ceiling.
+    """
+
+    name: str
+    wall: str
+    contact: float
+    front: float
+    far: float
+    span: list[float]
+
+
+@dataclass
+class Tube:
+    """A straight pipe running along the room (parallel to the depth axis)
+    just under the ceiling. Seen from the camera it is a wedge between two
+    lines through the vanishing point. Found automatically by tip.relief.
+
+    near, far: [x, y] image points on its centre line, at its near and far ends.
+    half_angle: half the angle of the wedge at the vanishing point (radians).
+        A cylinder of radius r whose axis is rho from the depth axis is seen at
+        sin(half_angle) = r / rho, and touching the ceiling fixes rho.
+    """
+
+    name: str
+    near: list[float]
+    far: list[float]
+    half_angle: float
+
+
+@dataclass
 class Annotation:
     image: str
     vanishing_point: tuple[float, float]
@@ -76,6 +123,9 @@ class Annotation:
     objects: list[RoomObject] = field(default_factory=list)
     # Surfaces of revolution (vertical axis).
     solids: list[Solid] = field(default_factory=list)
+    # Boxes fixed to the walls or ceiling, and pipes along the ceiling.
+    reliefs: list[Relief] = field(default_factory=list)
+    tubes: list[Tube] = field(default_factory=list)
 
     def focal_px(self, width: int, height: int) -> float:
         """Focal length in pixels (35mm frame long side = 36mm)."""
@@ -88,7 +138,9 @@ def load_annotation(path: str | Path) -> Annotation:
     fgs = [Foreground(**f) for f in raw.pop("foreground", [])]
     objs = [RoomObject(**o) for o in raw.pop("objects", [])]
     sols = [Solid(**o) for o in raw.pop("solids", [])]
-    ann = Annotation(**raw, foreground=fgs, objects=objs, solids=sols)
+    rels = [Relief(**o) for o in raw.pop("reliefs", [])]
+    tubes = [Tube(**o) for o in raw.pop("tubes", [])]
+    ann = Annotation(**raw, foreground=fgs, objects=objs, solids=sols, reliefs=rels, tubes=tubes)
     ann.vanishing_point = tuple(ann.vanishing_point)
     ann.back_wall = tuple(ann.back_wall)
     # Resolve the image path relative to the repo root (annotation's grandparent).
@@ -111,6 +163,12 @@ def save_annotation(ann: Annotation, path: str | Path) -> None:
         "objects": [{"name": o.name, "front": list(o.front), "back_y": o.back_y} for o in ann.objects],
         "solids": [{"name": o.name, "mount": o.mount, "profile": [[round(float(v), 1) for v in r] for r in o.profile]}
                    for o in ann.solids],
+        "reliefs": [{"name": o.name, "wall": o.wall, "contact": round(float(o.contact), 1),
+                     "front": round(float(o.front), 1), "far": round(float(o.far), 1),
+                     "span": [round(float(v), 1) for v in o.span]} for o in ann.reliefs],
+        "tubes": [{"name": o.name, "near": [round(float(v), 1) for v in o.near],
+                   "far": [round(float(v), 1) for v in o.far], "half_angle": round(float(o.half_angle), 5)}
+                  for o in ann.tubes],
         "foreground": [
             {k: v for k, v in f.__dict__.items() if v is not None} for f in ann.foreground
         ],

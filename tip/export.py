@@ -40,10 +40,15 @@ def write_scene(scene: Scene, textures: dict, out_dir, image_name: str, source_i
             # three.js LatheGeometry input: axis position and (radius, y) profile, bottom to top.
             entry["axis"] = [round(float(plane.ax), 5), round(float(-plane.az), 5)]
             entry["profile"] = [[round(float(r), 5), round(float(y), 5)] for r, y in zip(plane.radius, plane.ys)]
+        elif plane.kind == "tube":
+            # three.js CylinderGeometry (open ended), turned to lie along -z.
+            entry["tube"] = {"center": [round(float(plane.cx), 5), round(float(plane.cy), 5)],
+                             "radius": round(float(plane.r), 5),
+                             "z": [round(float(-plane.z0), 5), round(float(-plane.z1), 5)]}
         else:
             # Order: top-left, top-right, bottom-right, bottom-left of the texture.
             entry["corners"] = [to_three(c) for c in plane.corners]
-        if plane.kind in ("box", "lathe"):
+        if plane.kind in ("box", "lathe", "tube"):
             to_pil(push_pull_fill(tex)).convert("RGB").save(out / f"{plane.name}_filled.jpg", quality=92)
             entry["texture_filled"] = f"{plane.name}_filled.jpg"
         planes.append(entry)

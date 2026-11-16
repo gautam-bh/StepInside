@@ -4,7 +4,7 @@ CS180 final project: turn a single interior photograph into a scene you can step
 
 The starting point is **Tour Into the Picture** (TIP; Horry, Anjyo & Arai, SIGGRAPH 1997). The room is a textured box (back wall, floor, ceiling, left and right walls), and foreground objects are flat cutouts standing at their estimated depth. When the camera moves, it reveals regions the photo never saw. The project's research question is how to fill those: later we will add diffusion inpainting on the rectified wall and floor textures and compare it against inpainting the original photo directly.
 
-**Status:** TIP baseline working on the hallway scene: a chain of 7 boxes runs from the camera through the doorway to the corridor's end wall. Holes are shown, and a simple push-pull fill is available. Automatic annotation detects the vanishing point, the back wall, the deeper boxes down the corridor, room-aligned furniture (cabinets, desks) as 3D boxes, and round objects (vases, extinguishers) as 3D surfaces of revolution. An interactive editor lets you adjust the result. Diffusion completion is not started.
+**Status:** TIP baseline working on the hallway scene: a chain of 7 boxes runs from the camera through the doorway to the corridor's end wall. Holes are shown, and a simple push-pull fill is available. Automatic annotation detects the vanishing point, the back wall, the deeper boxes down the corridor, room-aligned furniture (cabinets, desks) as 3D boxes, round objects (vases, extinguishers) as 3D surfaces of revolution, boxes fixed to the walls or ceiling (signs, alarm boxes, hanging signs) as thin 3D boxes, and pipes under the ceiling as 3D cylinders. All of it is classical computer vision with no hand input. An interactive editor lets you adjust the result. Diffusion completion is not started.
 
 | Hand annotation (7 boxes) | Automatic annotation (4 boxes) | Novel views (top: holes in magenta, bottom: push-pull fill) |
 |---|---|---|
@@ -27,6 +27,10 @@ On the hallway photo, the one room-aligned object is the gray trash bin 27 m dow
 **Solids (surfaces of revolution).** Round objects with a vertical axis are found automatically and rebuilt as 3D lathe meshes. On the hallway both fire extinguishers are found, with no false positives and no hand input. The panels show the empty-room background predicted from the room geometry, the regions that differ from it, the traced silhouettes, and a novel view where the extinguishers stand off the wall and uncover holes (`python scripts/solids_figure.py data/annotations/hallway_auto.json`):
 
 <img src="outputs/hallway/solids_auto.jpg" width="820">
+
+**Wall boxes and ceiling pipes.** Things fixed to the walls or ceiling and pipes along the ceiling are also found automatically. On the hallway, the fire-extinguisher sign (10 cm out from the wall, 17 cm tall) and the strobe light (5 cm out) become small boxes standing off the right wall. Six pipes and rails become cylinders hanging just under the ceiling. Flat things (posters, the bulletin board's paper) correctly stay on the wall, since the photo shows no thickness for them. A sideways move shows the sign standing off the wall and the ceiling behind the pipes (`python scripts/wall_things_figure.py data/annotations/hallway_auto.json`):
+
+<img src="outputs/hallway/wall_things_auto.jpg" width="820">
 
 ## Quick start
 
@@ -128,9 +132,12 @@ Good photos have one-point perspective (looking straight down the room), visible
    - **Round vs. flat.** The top and bottom outline must match the projected rim ellipses better than the straight edges of a flat rectangle (horizontal, or receding to the VP). A straight line only counts if it stops at the object's sides; a background line that runs on behind it (the baseboard behind the extinguishers) does not.
 
    On the hallway (auto or hand room geometry) it finds exactly the two extinguishers in about 12 s at 800 px. On synthetic rooms it finds a floor vase and a wall-hung cylinder to within a few cm, with no false positives from doors, posters or furniture. Without OpenCV, `find_solids(..., proposals="seeds")` is a pure-NumPy fallback: mirrored colour-gradient edge pairs vote for axes, and a GrabCut-style loop with a symmetric-profile Viterbi in place of the graph cut traces them. It works on synthetic rooms, but not on cluttered photos.
-6. **Foreground.** Each outlined object becomes a billboard parallel to the image plane. Its depth comes from where its bottom meets the floor. Like classic TIP, billboards draw on top of the box.
-7. **Rendering.** [`viewer/index.html`](viewer/index.html) uses three.js, with `setViewOffset` to reproduce the off-center principal point. [`tip/render.py`](tip/render.py) is a NumPy ray-caster that produces the same views for figures and tests. From the original camera it reproduces the input photo (checked in `tests/test_tip.py`).
-8. **Simple fill baseline.** `push_pull_fill` fills holes from a weighted image pyramid. It gives smooth color with no texture or line continuation, the "simple filling" baseline from the proposal.
+6. **Wall boxes and pipes** ([`tip/relief.py`](tip/relief.py), run by `auto_annotate`). Both start from the same empty-room proposals as the solids.
+   - **Wall boxes** (`reliefs`). A box fixed to a side wall or the ceiling shows a near face, parallel to the image and so a true rectangle, and a front face parallel to the wall, whose top and bottom edges recede to the VP. The near face's outer edge lies on the wall. A wall at distance W seen p px from the VP is at depth z = f·W/p, so that edge alone fixes the depth. Its inner edge then gives how far the box sticks out, and the front face's far edge gives its length along the wall. One model covers a sign sticking out of the wall (long out, short along), an alarm box (the reverse), and a sign hanging from the ceiling (the same, with the ceiling as the wall). Each proposal is traced with GrabCut and tried against two hypotheses, box and flat, each fitted by coordinate ascent on the IoU between the trace and its silhouette (the convex hull of the projected 3D box). The overlap pins the front corner only loosely, so the corner is then moved to the strongest real edge nearby. A box is kept only if it beats flat: either its silhouette fits clearly better, or the photo shows the near face's own outline (the corner edge, plus top and bottom edges running straight across rather than receding). The contact edge must border the wall it names. On a synthetic room with an alarm box, a wall sign, a hanging sign and a flat poster, the three boxes come back within 3 cm and the poster stays flat.
+   - **Pipes** (`tubes`). A pipe along the depth axis has cross-section circles in planes z = const. Each projects to a circle, so the pipe is seen as a wedge between two lines through the VP with sin(half angle) = r/ρ, where ρ is the axis's distance from the optical axis. Touching the ceiling gives ρ, and so r. In a polar resampling about the VP, the pipe's edges are rays of constant angle. Each ray is scored by how much of the ceiling along it has a strong gradient across it. Neighbouring edge rays become a candidate when both edges are supported over the same long stretch and the inside differs in colour from the empty ceiling. It must also be smooth along its length (a cable tray's rungs are not), and edges must bound it on both sides at its full width. That width is measured in four stretches along the pipe, because real pipes drift slightly off the VP. On a synthetic room two pipes come back within 1 cm in position and radius. Pipes become `Cylinder` surfaces (three.js `CylinderGeometry`), with the unseen top mirrored from the visible underside.
+7. **Foreground.** Each outlined object becomes a billboard parallel to the image plane. Its depth comes from where its bottom meets the floor. Like classic TIP, billboards draw on top of the box.
+8. **Rendering.** [`viewer/index.html`](viewer/index.html) uses three.js, with `setViewOffset` to reproduce the off-center principal point. [`tip/render.py`](tip/render.py) is a NumPy ray-caster that produces the same views for figures and tests. From the original camera it reproduces the input photo (checked in `tests/test_tip.py`).
+9. **Simple fill baseline.** `push_pull_fill` fills holes from a weighted image pyramid. It gives smooth color with no texture or line continuation, the "simple filling" baseline from the proposal.
 
 ### Hallway scene numbers
 
@@ -149,9 +156,9 @@ Good photos have one-point perspective (looking straight down the room), visible
 ```
 tip/            library: annotations, geometry, textures (+ push-pull fill), renderer, export,
                 auto_annotate (VP, back wall, deeper boxes, objects), revolve (solids: surfaces of
-                revolution), editor (interactive annotation)
+                revolution), relief (boxes on walls/ceiling, ceiling pipes), editor (interactive annotation)
 scripts/        annotate.py · show_annotation.py · build_scene.py · render_views.py · face_textures.py
-                synthetic_demo.py (furnished test room with known geometry) · solids_figure.py
+                synthetic_demo.py (furnished test room with known geometry) · solids_figure.py · wall_things_figure.py
 viewer/         three.js interactive viewer (loads scenes/<name>/scene.json)
 data/images/    input photos
 data/annotations/  per-scene annotation JSON
@@ -167,6 +174,8 @@ tests/          test_tip.py (geometry/rendering) · test_annotation_tools.py (de
 - No lens-distortion correction. On the hallway the room edges are straight to within about 1–2 px (iPhones correct distortion in-camera). Also, radial distortion leaves lines through the image center straight, and TIP's room edges all run through the VP near the center. So even a 15% barrel distortion moves the detected VP by only about 2 px (tested on synthetic rooms). Distortion would only slightly warp wall textures near the photo borders. It would matter for fisheye/GoPro-style lenses or VPs far off-center.
 - Foreground objects are flat cutouts. Big sideways moves reveal that they're cards. Only furniture square to the room becomes a 3D box and only upright round objects become solids; a turned chair or an angled desk stays a cutout.
 - Solids are upright (no tilt), and a wall-hung solid is assumed to touch the wall. The yellow extinguisher hangs off a bracket and leans; with the auto room geometry the mount test calls it floor-standing, so it sits a few cm off. Small objects (under about 16 px wide at 800 px) are not judged.
+- Wall boxes are axis-aligned boxes, so a V-shaped two-sided sign becomes its bounding box. Thickness is only measured where the photo shows it (a near face at least 2 px wide at 800 px); a paper poster or the glass bulletin board, whose near end is out of frame, stays flat on the wall. Objects touching each other in the photo (a sign hanging in front of a pipe) can merge into one proposal and be rejected.
+- Pipes must run along the room's depth axis and touch the ceiling; cross pipes (along X) and pipes on hangers stay painted on the ceiling. The light fixture and cable tray are rejected, except that the tray's smooth side rail is taken as a pipe. Pipe widths come out about 20–30% thin on the hallway, where edges are soft at 800 px.
 - Object detection needs the front face's outline to be mostly visible (not hidden behind something else). Its depth comes from the receding edges, so a box whose side matches the background in color can come out too shallow.
 - The photo has no data close to the camera along the side walls, so even a small sideways step reveals large holes there (see the left/right views).
 - The focal length is an assumption (26 mm equivalent), not calibrated.
@@ -174,6 +183,8 @@ tests/          test_tip.py (geometry/rendering) · test_annotation_tools.py (de
 ## Next steps
 
 - [x] Solids on real photos: OpenCV GrabCut on room-background proposals, wired into `auto_annotate`
+- [x] Wall boxes (signs, alarm boxes, hanging signs) and ceiling pipes, automatic and classical
+- [ ] Cross pipes along X, door casings as frames, and splitting touching proposals
 - [ ] Solids: tilted axes, and SAM as a fallback tracer for shapes GrabCut can't separate
 - [ ] Diffusion inpainting on the rectified plane textures vs. on the original photo (the main experiment)
 - [ ] Photograph about 6 scenes, plus held-out nearby views for evaluation

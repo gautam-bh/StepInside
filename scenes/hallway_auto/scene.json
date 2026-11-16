@@ -101,7 +101,7 @@
       "kind": "box",
       "segment": 0,
       "texture": "s0_ceiling.png",
-      "hole_fraction": 0.0703,
+      "hole_fraction": 0.1252,
       "corners": [
         [
           -1.18511,
@@ -161,7 +161,7 @@
       "kind": "box",
       "segment": 0,
       "texture": "s0_right.png",
-      "hole_fraction": 0.1486,
+      "hole_fraction": 0.1542,
       "corners": [
         [
           1.45562,
@@ -1123,6 +1123,420 @@
         ]
       ],
       "texture_filled": "r_solid2_filled.jpg"
+    },
+    {
+      "name": "w_relief1_left",
+      "kind": "box",
+      "segment": 0,
+      "texture": "w_relief1_left.png",
+      "hole_fraction": 0.0,
+      "corners": [
+        [
+          1.35126,
+          0.55917,
+          -3.15319
+        ],
+        [
+          1.35126,
+          0.55917,
+          -3.108
+        ],
+        [
+          1.35126,
+          0.39241,
+          -3.108
+        ],
+        [
+          1.35126,
+          0.39241,
+          -3.15319
+        ]
+      ],
+      "texture_filled": "w_relief1_left_filled.jpg"
+    },
+    {
+      "name": "w_relief1_bottom",
+      "kind": "box",
+      "segment": 0,
+      "texture": "w_relief1_bottom.png",
+      "hole_fraction": 0.0064,
+      "corners": [
+        [
+          1.35126,
+          0.39241,
+          -3.108
+        ],
+        [
+          1.45562,
+          0.39241,
+          -3.108
+        ],
+        [
+          1.45562,
+          0.39241,
+          -3.15319
+        ],
+        [
+          1.35126,
+          0.39241,
+          -3.15319
+        ]
+      ],
+      "texture_filled": "w_relief1_bottom_filled.jpg"
+    },
+    {
+      "name": "w_relief1_top",
+      "kind": "box",
+      "segment": 0,
+      "texture": "w_relief1_top.png",
+      "hole_fraction": 1.0,
+      "corners": [
+        [
+          1.35126,
+          0.55917,
+          -3.15319
+        ],
+        [
+          1.45562,
+          0.55917,
+          -3.15319
+        ],
+        [
+          1.45562,
+          0.55917,
+          -3.108
+        ],
+        [
+          1.35126,
+          0.55917,
+          -3.108
+        ]
+      ],
+      "texture_filled": "w_relief1_top_filled.jpg"
+    },
+    {
+      "name": "w_relief1_front",
+      "kind": "box",
+      "segment": 0,
+      "texture": "w_relief1_front.png",
+      "hole_fraction": 0.0,
+      "corners": [
+        [
+          1.35126,
+          0.55917,
+          -3.108
+        ],
+        [
+          1.45562,
+          0.55917,
+          -3.108
+        ],
+        [
+          1.45562,
+          0.39241,
+          -3.108
+        ],
+        [
+          1.35126,
+          0.39241,
+          -3.108
+        ]
+      ],
+      "texture_filled": "w_relief1_front_filled.jpg"
+    },
+    {
+      "name": "w_relief1_back",
+      "kind": "box",
+      "segment": 0,
+      "texture": "w_relief1_back.png",
+      "hole_fraction": 1.0,
+      "corners": [
+        [
+          1.45562,
+          0.55917,
+          -3.15319
+        ],
+        [
+          1.35126,
+          0.55917,
+          -3.15319
+        ],
+        [
+          1.35126,
+          0.39241,
+          -3.15319
+        ],
+        [
+          1.45562,
+          0.39241,
+          -3.15319
+        ]
+      ],
+      "texture_filled": "w_relief1_back_filled.jpg"
+    },
+    {
+      "name": "w_relief2_left",
+      "kind": "box",
+      "segment": 0,
+      "texture": "w_relief2_left.png",
+      "hole_fraction": 0.0,
+      "corners": [
+        [
+          1.40702,
+          0.86188,
+          -3.37672
+        ],
+        [
+          1.40702,
+          0.86188,
+          -3.30332
+        ],
+        [
+          1.40702,
+          0.78412,
+          -3.30332
+        ],
+        [
+          1.40702,
+          0.78412,
+          -3.37672
+        ]
+      ],
+      "texture_filled": "w_relief2_left_filled.jpg"
+    },
+    {
+      "name": "w_relief2_bottom",
+      "kind": "box",
+      "segment": 0,
+      "texture": "w_relief2_bottom.png",
+      "hole_fraction": 0.0037,
+      "corners": [
+        [
+          1.40702,
+          0.78412,
+          -3.30332
+        ],
+        [
+          1.45562,
+          0.78412,
+          -3.30332
+        ],
+        [
+          1.45562,
+          0.78412,
+          -3.37672
+        ],
+        [
+          1.40702,
+          0.78412,
+          -3.37672
+        ]
+      ],
+      "texture_filled": "w_relief2_bottom_filled.jpg"
+    },
+    {
+      "name": "w_relief2_top",
+      "kind": "box",
+      "segment": 0,
+      "texture": "w_relief2_top.png",
+      "hole_fraction": 1.0,
+      "corners": [
+        [
+          1.40702,
+          0.86188,
+          -3.37672
+        ],
+        [
+          1.45562,
+          0.86188,
+          -3.37672
+        ],
+        [
+          1.45562,
+          0.86188,
+          -3.30332
+        ],
+        [
+          1.40702,
+          0.86188,
+          -3.30332
+        ]
+      ],
+      "texture_filled": "w_relief2_top_filled.jpg"
+    },
+    {
+      "name": "w_relief2_front",
+      "kind": "box",
+      "segment": 0,
+      "texture": "w_relief2_front.png",
+      "hole_fraction": 0.0,
+      "corners": [
+        [
+          1.40702,
+          0.86188,
+          -3.30332
+        ],
+        [
+          1.45562,
+          0.86188,
+          -3.30332
+        ],
+        [
+          1.45562,
+          0.78412,
+          -3.30332
+        ],
+        [
+          1.40702,
+          0.78412,
+          -3.30332
+        ]
+      ],
+      "texture_filled": "w_relief2_front_filled.jpg"
+    },
+    {
+      "name": "w_relief2_back",
+      "kind": "box",
+      "segment": 0,
+      "texture": "w_relief2_back.png",
+      "hole_fraction": 1.0,
+      "corners": [
+        [
+          1.45562,
+          0.86188,
+          -3.37672
+        ],
+        [
+          1.40702,
+          0.86188,
+          -3.37672
+        ],
+        [
+          1.40702,
+          0.78412,
+          -3.37672
+        ],
+        [
+          1.45562,
+          0.78412,
+          -3.37672
+        ]
+      ],
+      "texture_filled": "w_relief2_back_filled.jpg"
+    },
+    {
+      "name": "t_tube1",
+      "kind": "tube",
+      "segment": 0,
+      "texture": "t_tube1.png",
+      "hole_fraction": 0.4884,
+      "tube": {
+        "center": [
+          -0.81027,
+          1.12486
+        ],
+        "radius": 0.01248,
+        "z": [
+          -2.12461,
+          -3.98463
+        ]
+      },
+      "texture_filled": "t_tube1_filled.jpg"
+    },
+    {
+      "name": "t_tube2",
+      "kind": "tube",
+      "segment": 0,
+      "texture": "t_tube2.png",
+      "hole_fraction": 0.5116,
+      "tube": {
+        "center": [
+          -0.57519,
+          1.1001
+        ],
+        "radius": 0.03724,
+        "z": [
+          -2.09739,
+          -3.89828
+        ]
+      },
+      "texture_filled": "t_tube2_filled.jpg"
+    },
+    {
+      "name": "t_tube3",
+      "kind": "tube",
+      "segment": 0,
+      "texture": "t_tube3.png",
+      "hole_fraction": 0.4722,
+      "tube": {
+        "center": [
+          -0.2582,
+          1.12693
+        ],
+        "radius": 0.01041,
+        "z": [
+          -2.12055,
+          -4.48259
+        ]
+      },
+      "texture_filled": "t_tube3_filled.jpg"
+    },
+    {
+      "name": "t_tube4",
+      "kind": "tube",
+      "segment": 0,
+      "texture": "t_tube4.png",
+      "hole_fraction": 0.52,
+      "tube": {
+        "center": [
+          0.38867,
+          1.13017
+        ],
+        "radius": 0.00717,
+        "z": [
+          -2.12456,
+          -4.86199
+        ]
+      },
+      "texture_filled": "t_tube4_filled.jpg"
+    },
+    {
+      "name": "t_tube5",
+      "kind": "tube",
+      "segment": 0,
+      "texture": "t_tube5.png",
+      "hole_fraction": 0.5192,
+      "tube": {
+        "center": [
+          0.88246,
+          1.12022
+        ],
+        "radius": 0.01711,
+        "z": [
+          -2.39541,
+          -4.12
+        ]
+      },
+      "texture_filled": "t_tube5_filled.jpg"
+    },
+    {
+      "name": "t_tube6",
+      "kind": "tube",
+      "segment": 0,
+      "texture": "t_tube6.png",
+      "hole_fraction": 0.5094,
+      "tube": {
+        "center": [
+          0.98127,
+          1.07619
+        ],
+        "radius": 0.06115,
+        "z": [
+          -2.09324,
+          -3.40663
+        ]
+      },
+      "texture_filled": "t_tube6_filled.jpg"
     }
   ]
 }

@@ -28,6 +28,20 @@ the two rays at beta +- alpha with sin(alpha) = r / D. So each silhouette row
 gives alpha, and the radius follows once D is known. D comes from the floor
 (the lowest silhouette point is the near edge of the base circle) or from the
 side wall the object hangs on (its outer edge touches the wall).
+
+Reliefs (annotation `reliefs`) are boxes fixed to a side wall or the
+ceiling. Their near face is parallel to the image, so it is seen undistorted.
+Its outer edge lies on the wall, which gives its depth: z0 = f * W / p for a
+wall at distance W, seen p pixels from the vanishing point. Its inner edge
+then gives how far it sticks out, and the inner edge of its far end gives
+its length along the wall. A sign sticking out of the wall is a relief
+that is long out of the wall and short along it; an alarm box is the reverse.
+
+Tubes (annotation `tubes`) are pipes along the depth axis under the ceiling.
+Each cross-section circle lies in a plane z = const, so it projects to a
+circle, and the pipe is seen as a wedge between two lines through the
+vanishing point, with sin(half angle) = r / rho for radius r at distance rho
+from the axis. The pipe touching the ceiling gives rho.
 """
 
 from __future__ import annotations
@@ -36,7 +50,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .annotations import Annotation, Foreground, RoomObject, Solid
+from .annotations import Annotation, Foreground, Relief, RoomObject, Solid, Tube
 
 
 @dataclass
@@ -172,6 +186,65 @@ class Lathe:
         s = phi / (2 * np.pi)
         tt = 1 - frac / (len(self.ys) - 1)
         out = lambda a: a.reshape(shape)  # noqa: E731
+        return out(np.where(valid, best, np.inf)), out(s), out(tt), out(valid)
+
+
+@dataclass
+class Cylinder:
+    """A pipe along the depth axis: X = cx + r sin(phi), Y = cy + r cos(phi),
+    Z in [z0, z1]. Texture: s = phi / 2pi (phi = 0 on top) and t = 0 at the
+    far end, 1 at the near end, as three.js's CylinderGeometry turned to lie
+    along -Z."""
+
+    name: str
+    cx: float
+    cy: float
+    r: float
+    z0: float
+    z1: float
+    kind: str = "tube"
+    segment: int = 0
+
+    def point(self, s, t):
+        phi = 2 * np.pi * np.asarray(s, float)
+        z = self.z1 - np.asarray(t, float) * (self.z1 - self.z0)
+        phi, z = np.broadcast_arrays(phi, z)
+        return np.stack([self.cx + self.r * np.sin(phi), self.cy + self.r * np.cos(phi), z], axis=-1)
+
+    def normal(self, s, t):
+        phi = 2 * np.pi * np.asarray(s, float)
+        phi, _ = np.broadcast_arrays(phi, np.asarray(t, float))
+        return np.stack([np.sin(phi), np.cos(phi), np.zeros_like(phi)], axis=-1)
+
+    def mirror_cols(self, cols: int) -> np.ndarray:
+        """Texture column seen in place of each column on the hidden side:
+        the mirror image through the plane holding the axis and the camera."""
+        phi_c = np.arctan2(-self.cx, -self.cy)
+        phi = 2 * np.pi * (np.arange(cols) + 0.5) / cols
+        return np.floor(((2 * phi_c - phi) % (2 * np.pi)) / (2 * np.pi) * cols).astype(int) % cols
+
+    def hit(self, cam: np.ndarray, dirs: np.ndarray):
+        shape = dirs.shape[:-1]
+        d = dirs.reshape(-1, 3)
+        ox, oy = cam[0] - self.cx, cam[1] - self.cy
+        a = d[:, 0] ** 2 + d[:, 1] ** 2
+        b = 2 * (ox * d[:, 0] + oy * d[:, 1])
+        c = ox * ox + oy * oy - self.r ** 2
+        disc = b * b - 4 * a * c
+        sq = np.sqrt(np.maximum(disc, 0))
+        best = np.full(len(d), np.inf)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            for sign in (1.0, -1.0):  # far root first, so the near one wins
+                t = (-b - sign * sq) / (2 * a)
+                z = cam[2] + t * d[:, 2]
+                ok = (disc >= 0) & np.isfinite(t) & (t > 1e-6) & (z >= self.z0) & (z <= self.z1)
+                best = np.where(ok & (t < best), t, best)
+        valid = np.isfinite(best)
+        t = np.where(valid, best, 0.0)
+        p = cam + t[:, None] * d
+        s = (np.arctan2(p[:, 0] - self.cx, p[:, 1] - self.cy) % (2 * np.pi)) / (2 * np.pi)
+        tt = (self.z1 - p[:, 2]) / max(self.z1 - self.z0, 1e-9)
+        out = lambda x: x.reshape(shape)  # noqa: E731
         return out(np.where(valid, best, np.inf)), out(s), out(tt), out(valid)
 
 
@@ -337,6 +410,10 @@ def build_scene(ann: Annotation, width: int, height: int) -> Scene:
         scene.planes += object_planes(obj, scene)
     for sol in ann.solids:
         scene.planes.append(solid_surface(sol, scene))
+    for rel in ann.reliefs:
+        scene.planes += relief_planes(rel, scene)
+    for tube in ann.tubes:
+        scene.planes.append(tube_surface(tube, scene))
     for fg in ann.foreground:
         scene.planes.append(foreground_plane(fg, scene))
     return scene
@@ -405,6 +482,113 @@ def solid_surface(sol: Solid, scene: Scene) -> Lathe:
     ax, az = D * np.sin(beta), D * np.cos(beta)
     seg = next((k for k, b in enumerate(scene.boxes) if b.z0 <= az <= b.z1), len(scene.boxes) - 1)
     return Lathe(f"r_{sol.name}", float(ax), float(az), radius, ys, segment=seg)
+
+
+def _segment_at(scene: Scene, z: float) -> int:
+    return next((k for k, b in enumerate(scene.boxes) if b.z0 - 1e-6 <= z <= b.z1 + 1e-6), len(scene.boxes) - 1)
+
+
+def relief_box(rel: Relief, scene: Scene):
+    """3D extent (lo, hi) of a relief, as two corners (X, Y, Z), or None if
+    its contact edge doesn't land on the wall it names."""
+    f = scene.focal
+    vx, vy = scene.principal
+    # Signed distance from the vanishing point across the wall, in pixels.
+    across = (lambda q: vy - q) if rel.wall == "ceiling" else (lambda q: q - vx)
+    pc, pf, p1 = across(rel.contact), across(rel.front), across(rel.far)
+    z0 = None
+    for b in scene.boxes:
+        W = {"left": b.xl, "right": b.xr, "ceiling": b.yc}[rel.wall]
+        if abs(pc) < 1e-6 or W * pc <= 0:
+            continue
+        z = f * W / pc
+        if b.z0 - 1e-6 <= z <= b.z1 + 1e-6:
+            z0 = z
+            break
+    if z0 is None or pf * pc <= 0 or abs(pf) > abs(pc) + 1e-6:
+        return None
+    Wf = pf * z0 / f  # the front face's distance from the depth axis
+    z1 = f * Wf / p1 if p1 * pf > 0 else z0
+    z1 = max(z1, z0 + 0.01)  # a sign facing the camera still has some thickness
+    q0, q1 = sorted(rel.span)
+    if rel.wall == "ceiling":
+        xs = ((q0 - vx) * z0 / f, (q1 - vx) * z0 / f)
+        lo, hi = (xs[0], Wf, z0), (xs[1], W, z1)
+    else:
+        ys = ((vy - q1) * z0 / f, (vy - q0) * z0 / f)
+        xs = sorted((Wf, W))
+        lo, hi = (xs[0], ys[0], z0), (xs[1], ys[1], z1)
+    return np.array(lo, float), np.array(hi, float)
+
+
+def cuboid_planes(prefix: str, lo, hi, skip=(), segment: int = 0) -> list[Plane]:
+    """The faces of an axis-aligned box, each oriented to be seen from
+    outside (u x v points out; vertical faces have v pointing down, top and
+    bottom faces have u along +X). skip: faces to leave out, from
+    "-x", "+x", "-y", "+y", "-z", "+z"."""
+    lo, hi = np.asarray(lo, float), np.asarray(hi, float)
+    ext = hi - lo
+    planes = []
+    names = {"-x": "left", "+x": "right", "-y": "bottom", "+y": "top", "-z": "front", "+z": "back"}
+    E = np.eye(3)
+    for key, nm in names.items():
+        if key in skip:
+            continue
+        a = "xyz".index(key[1])
+        n = E[a] * (1.0 if key[0] == "+" else -1.0)
+        if a == 1:  # top / bottom
+            u = E[0] * ext[0]
+            v = E[2] * ext[2] * (-1.0 if key[0] == "+" else 1.0)
+        else:
+            v = -E[1] * ext[1]
+            u_dir = np.cross(-E[1], n)
+            u = u_dir * ext[int(np.argmax(np.abs(u_dir)))]
+        centre = (lo + hi) / 2 + n * ext[a] / 2
+        planes.append(Plane(prefix + nm, centre - u / 2 - v / 2, u, v, segment=segment))
+    return planes
+
+
+def relief_planes(rel: Relief, scene: Scene) -> list[Plane]:
+    box = relief_box(rel, scene)
+    if box is None:
+        raise ValueError(f"relief {rel.name}: its contact edge doesn't meet the {rel.wall} wall")
+    lo, hi = box
+    skip = {"left": "-x", "right": "+x", "ceiling": "+y"}[rel.wall]
+    return cuboid_planes(f"w_{rel.name}_", lo, hi, skip=(skip,), segment=_segment_at(scene, lo[2]))
+
+
+def tube_geometry(tube: Tube, scene: Scene):
+    """(cx, cy, r, z0, z1) of a pipe touching the ceiling, or None."""
+    f = scene.focal
+    vx, vy = scene.principal
+    n = np.array([tube.near[0] - vx, vy - tube.near[1]], float)
+    fa = np.array([tube.far[0] - vx, vy - tube.far[1]], float)
+    theta = np.arctan2(n[1], n[0])
+    sa = np.sin(tube.half_angle)
+    den = np.sin(theta) + sa
+    if den <= 1e-6:
+        return None
+    rn, rf = np.linalg.norm(n), np.linalg.norm(fa)
+    for k, b in enumerate(scene.boxes):
+        rho = b.yc / den
+        z0, z1 = f * rho / rn, f * rho / rf
+        # Its near end may be in front of the first box (a pipe below the
+        # ceiling leaves the image nearer than the ceiling does).
+        if (b.z0 - 1e-6 <= z0 or k == 0) and z0 <= b.z1 + 1e-6:
+            z1 = min(z1, b.z1)  # it ends at this box's back wall at the latest
+            if z1 <= z0 or z0 <= 0:
+                return None
+            return rho * np.cos(theta), rho * np.sin(theta), rho * sa, z0, z1
+    return None
+
+
+def tube_surface(tube: Tube, scene: Scene) -> Cylinder:
+    g = tube_geometry(tube, scene)
+    if g is None:
+        raise ValueError(f"tube {tube.name}: it doesn't fit under the ceiling")
+    cx, cy, r, z0, z1 = g
+    return Cylinder(f"t_{tube.name}", float(cx), float(cy), float(r), float(z0), float(z1),
+                    segment=_segment_at(scene, z0))
 
 
 def object_planes(obj: RoomObject, scene: Scene) -> list[Plane]:

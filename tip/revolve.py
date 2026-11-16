@@ -316,12 +316,13 @@ def _stripe_median(vals: np.ndarray, A: np.ndarray, C: np.ndarray, cell, window:
 
 
 def outlier_proposals(img: np.ndarray, bg: np.ndarray, bg_alt: np.ndarray, pid: np.ndarray, thr: float = 20.0,
-                      min_area: int = 100, core: float = 6.0, seam: int = 8):
+                      min_area: int = 100, core: float = 6.0, seam: int = 8, labels: bool = False):
     """Regions that don't look like the empty room: connected components of
     the pixels far (Lab distance) from the room background, cleaned with a
     morphological open and close. Within seam px of a boundary between
     planes, a floor or ceiling pixel must also differ from the alternative
-    (in-depth) background. Returns (mask, [(x, y, w, h)])."""
+    (in-depth) background. Returns (mask, [(x, y, w, h)]), and with
+    labels=True also the label image (component i + 1 is boxes[i])."""
     import cv2
 
     lab = _to_lab(img)
@@ -347,10 +348,14 @@ def outlier_proposals(img: np.ndarray, bg: np.ndarray, bg_alt: np.ndarray, pid: 
         grown = cv2.dilate(lab.astype(np.float32), k3).astype(np.int32)
         lab = np.where((lab == 0) & (m > 0), grown, lab)
     boxes = []
+    out = np.zeros_like(lab)
     for i in range(1, n):
         ys, xs = np.nonzero(lab == i)
         if len(xs) >= min_area:
             boxes.append((int(xs.min()), int(ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)))
+            out[ys, xs] = len(boxes)
+    if labels:
+        return m.astype(bool), boxes, out
     return m.astype(bool), boxes
 
 
