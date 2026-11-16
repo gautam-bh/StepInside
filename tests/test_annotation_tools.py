@@ -185,6 +185,10 @@ def test_hallway_deeper_boxes():
     first, last = r.segments[0], r.segments[-1]
     assert np.abs(hand_bottoms - first[3]).min() < 15, f"first box {first} ends away from any hand boundary"
     assert abs(last[3] - ann.segments[-1][3]) < 15, f"last box {last} vs hand end wall {ann.segments[-1]}"
+    # The doorway into the corridor is a thin door-frame box (lintel + jambs),
+    # like the hand annotation's first box.
+    door = ann.segments[0]
+    assert np.abs(np.array(first[:3]) - door[:3]).max() < 25, f"door frame {first} vs hand {door}"
     # The whole chain builds a valid scene, getting deeper box by box.
     auto = Annotation(image=ann.image, vanishing_point=r.vanishing_point, back_wall=tuple(r.back_wall),
                       segments=r.segments)

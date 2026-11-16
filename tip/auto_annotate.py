@@ -451,6 +451,59 @@ def find_deeper_boxes(gx, gy, vp, back_wall, step: int = 2, min_px: int = 6, rat
     return [c[1] for c in chain], gains
 
 
+def find_opening(gx, gy, vp, back_wall, inner=None, step: int = 2, min_px: int = 6, min_lintel: float = 0.05,
+                 top_min: float = 0.35, side_min: float = 0.25, thickness: float = 0.03,
+                 near_best: float = 0.9):
+    """A doorway in the back wall: the opening the deeper boxes are seen
+    through, when it is clearly smaller than the wall (a lintel above it,
+    possibly jambs beside it). The deeper-box search can't find it: a door
+    frame is only a wall's thickness deep, and boxes that thin are dropped.
+
+    The opening is a rectangle [x1, y1, x2, by2] that contains the VP and
+    the first deeper box (inner), and whose bottom is the back wall's
+    bottom (the threshold). Its top must sit at least min_lintel of the
+    wall's height below the wall's top, with a strong horizontal edge along
+    it (mean >= top_min, as in find_deeper_boxes), and its sides need
+    vertical edges from the top down to the floor (mean >= side_min).
+    Among valid rectangles scoring at least near_best x the best edge
+    evidence, the largest wins (the frame, not door leaves inside it).
+
+    Returns the door-frame box as a rect for `segments` (its bottom moved
+    toward the VP so the box is `thickness` x the room's depth deep), and
+    its score; or (None, 0) if there is no clear opening."""
+    vx, vy = vp
+    bx1, by1, bx2, by2 = back_wall
+    ix1, iy1, ix2 = (inner[0], inner[1], inner[2]) if inner is not None else (vx - min_px, vy - min_px, vx + min_px)
+    X1 = np.arange(int(np.ceil(bx1)), int(min(vx - min_px, ix1)) + 1, step)
+    X2 = np.arange(int(np.ceil(max(vx + min_px, ix2))), int(bx2) + 1, step)
+    Y1 = np.arange(int(np.ceil(by1 + min_lintel * (by2 - by1))), int(min(vy - min_px, iy1)) + 1, step)
+    if min(len(X1), len(X2), len(Y1)) == 0:
+        return None, 0.0
+    y2 = int(round(by2))
+    agy = _band_max(np.abs(gy), axis=0)
+    agx = _band_max(np.abs(gx), axis=1)
+    cap = np.percentile(np.hypot(gx, gy), 97) + 1e-6
+    Ch = np.concatenate([np.zeros((gy.shape[0], 1)), np.cumsum(agy, axis=1)], axis=1) / cap
+    Cv = np.concatenate([np.zeros((1, gx.shape[1])), np.cumsum(agx, axis=0)], axis=0) / cap
+    x1, x2, y1 = X1[:, None, None], X2[None, :, None], Y1[None, None, :]
+    top = (Ch[y1, x2] - Ch[y1, x1]) / (x2 - x1)
+    left = (Cv[y2, x1] - Cv[y1, x1]) / (y2 - y1)
+    right = (Cv[y2, x2] - Cv[y1, x2]) / (y2 - y1)
+    score = top + 0.5 * (left + right)
+    score = np.where((top >= top_min) & (left >= side_min) & (right >= side_min), score, -np.inf)
+    best = score.max()
+    if not np.isfinite(best):
+        return None, 0.0
+    # Several nested rectangles can qualify (a frame's inner edge, open door
+    # leaves standing in it): take the largest one that scores nearly as well.
+    area = np.broadcast_to((x2 - x1) * (y2 - y1), score.shape).astype(float)
+    k = int(np.argmax(np.where(score >= near_best * best, area, -1.0)))
+    a, b, c = np.unravel_index(k, score.shape)
+    # A box thickness x the room's depth deep ends at this floor row.
+    bottom = vy + (by2 - vy) / (1.0 + thickness)
+    return [float(X1[a]), float(Y1[c]), float(X2[b]), float(bottom)], float(score.ravel()[k])
+
+
 # --------------------------------------------------------------------------- room-aligned objects
 def _closing(m: np.ndarray, axis: int, r: int) -> np.ndarray:
     """1D morphological closing (fills gaps up to 2r px) along an axis."""
@@ -788,6 +841,12 @@ def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, d
         bw, _ = find_back_wall(rgx, rgy, vp)
     rays = rays_from_rect(vp, bw)
     segs, seg_scores = (find_deeper_boxes(rgx, rgy, vp, bw) if deeper else ([], []))
+    if segs:
+        # A doorway (lintel, jambs) in front of the deeper boxes becomes a
+        # thin door-frame box, so the lintel is a wall face, not ceiling.
+        frame, frame_score = find_opening(rgx, rgy, vp, bw, inner=segs[0])
+        if frame is not None and frame[3] > segs[0][3]:
+            segs, seg_scores = [frame] + segs, [frame_score] + list(seg_scores)
     objs = find_room_objects(gx, gy, vp, [bw] + segs) if objects else []
     inv = 1.0 / s
     # Map back to full-res pixel coordinates (pixel centers).

@@ -721,10 +721,10 @@ def find_solids(image: np.ndarray, scene, max_side: int = 800, min_height_px: in
         ru_b, rd_b = side_extent(gx, c + hw[-1], rows[0], rows[-1], thr, reach)
         if cd["sides"] < min_sides:
             why = f"sides not on image edges ({cd['sides']:.0%})"
-        # A rectangle receding along a side wall has its near side taller at
-        # both ends; a solid's sides end together (an attachment may run on
-        # past one end, like a hose below an extinguisher).
-        elif (lu - ru > tol and ld_b - rd_b > tol) or (ru - lu > tol and rd_b - ld_b > tol):
+        # A solid's sides end together. An attachment may run on past one end
+        # (a hose below an extinguisher), but not both; a rectangle receding
+        # along a wall, or the edge of a door, is uneven at both ends.
+        elif abs(lu - ru) > tol and abs(ld_b - rd_b) > tol:
             why = f"sides end unevenly (top {lu}/{ru}, bottom {ld_b}/{rd_b})"
         prof = [[float(to_full(y)), float(to_full(c - w)), float(to_full(c + w))] for y, w in zip(rows, hw)]
         sol = Solid("solid", prof, "floor")
