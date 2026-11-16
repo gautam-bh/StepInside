@@ -36,7 +36,8 @@ from tip.textures import extract_textures, load_image  # noqa: E402
 
 
 # --------------------------------------------------------------------------- synthetic rooms
-def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=(), objects=(), decor=False, solids=(), extras=()):
+def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=(), objects=(), decor=False, solids=(), extras=(),
+                   diagonal_tiles=False, focal_35mm=26.0):
     """Render a box room with plain-coloured, slightly noisy surfaces and a
     tiled floor, with known VP and back wall.
 
@@ -51,7 +52,7 @@ def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=(), objects=
     extras: (Plane, rgb) flat faces in plain colours (boxes on the walls)."""
     w, h = size
     ann = Annotation(image="synthetic", vanishing_point=vp, back_wall=back_wall, segments=[list(r) for r in segments],
-                     objects=list(objects))
+                     objects=list(objects), focal_35mm=focal_35mm)
     scene = build_scene(ann, w, h)
     scene.planes += [lathe for lathe, _ in solids] + [pl for pl, _ in extras]
     colors = {lathe.name: rgb for lathe, rgb in solids}
@@ -85,7 +86,12 @@ def synthetic_room(vp, back_wall, size=(600, 800), seed=0, segments=(), objects=
         n = 1024
         t = np.full((n, n, 3), base, np.float32)
         t += rng.normal(0, 0.005, t.shape).astype(np.float32)
-        if kind == "floor":  # tile grout lines
+        if kind == "floor" and diagonal_tiles:  # dark/light tiles laid at 45 degrees (in metres)
+            b0 = scene.boxes[0]
+            X, Z = np.meshgrid(np.linspace(b0.xl, b0.xr, n), np.linspace(b0.z1, b0.z0, n))
+            check = (np.floor((X + Z) / 0.5) + np.floor((X - Z) / 0.5)) % 2 == 0
+            t = np.where(check[..., None], 0.85, 0.15).astype(np.float32) + rng.normal(0, 0.005, t.shape).astype(np.float32)
+        elif kind == "floor":  # tile grout lines
             t[::128, :, :] -= 0.12
             t[:, ::128, :] -= 0.12
             if segments:  # darker threshold strip where the floor meets the next box
@@ -121,6 +127,24 @@ def test_vanishing_point_on_synthetic_rooms():
         est = find_vanishing_point(to_gray(img))
         err = np.hypot(est[0] - vp[0], est[1] - vp[1])
         assert err < 4.0, f"VP {est} vs truth {vp} (err {err:.1f}px)"
+
+
+def test_distance_points_give_vp_and_focal():
+    """Floor tiles laid at 45 degrees converge to two distance points on the
+    horizon, at VP -+ f: their midpoint is the VP and half their separation
+    the focal length (here a 35 mm lens, not the default 26 mm)."""
+    from tip.auto_annotate import find_distance_points
+
+    for vp, bw in CASES[:2]:
+        img = synthetic_room(vp, bw, diagonal_tiles=True, focal_35mm=35.0)
+        found = find_distance_points(img)
+        assert found is not None
+        (x, y), f, _ = found
+        f_true = 35.0 / 36 * 800
+        assert np.hypot(x - vp[0], y - vp[1]) < 6, (found, vp)
+        assert abs(f - f_true) / f_true < 0.03, (f, f_true)
+    # Square-on tiles give no distance points.
+    assert find_distance_points(synthetic_room(*CASES[0])) is None
 
 
 def test_back_wall_on_synthetic_rooms():

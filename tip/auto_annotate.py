@@ -805,6 +805,177 @@ class AutoResult:
     segments: list = None  # deeper boxes, nearest first (full-res rects)
     segment_scores: list = None
     objects: list = None  # [(front [x1, y1, x2, y2], back_y)] room-aligned boxes, full-res
+    focal_px: float | None = None  # measured from distance points, if the floor shows them
+
+
+# --------------------------------------------------------------------------- distance points
+def _segments(image: np.ndarray, max_side: int = 1000, min_frac: float = 0.02, margin_deg: float = 12.0):
+    """Straight line segments (OpenCV's LSD), longer than min_frac of the
+    image diagonal and not near horizontal/vertical. Full-res (N, 4) and lengths."""
+    import cv2
+
+    h, w = image.shape[:2]
+    k = min(1.0, max_side / max(h, w))
+    small = cv2.resize(image.astype(np.float32), (round(w * k), round(h * k)), interpolation=cv2.INTER_AREA)
+    g = (np.clip(to_gray(small), 0, 1) * 255).astype(np.uint8)
+    found = cv2.createLineSegmentDetector().detect(g)[0]
+    if found is None:
+        return np.zeros((0, 4)), np.zeros(0)
+    L = found.reshape(-1, 4).astype(float) / k
+    d = L[:, 2:] - L[:, :2]
+    ln = np.hypot(d[:, 0], d[:, 1])
+    ang = np.degrees(np.arctan2(np.abs(d[:, 1]), np.abs(d[:, 0])))
+    keep = (ln > min_frac * np.hypot(h, w)) & (ang > margin_deg) & (ang < 90 - margin_deg)
+    return L[keep], ln[keep]
+
+
+def _ransac_point(L, ln, iters: int = 2000, tol_deg: float = 1.0, seed: int = 0):
+    """The point most (length-weighted) segments point at: (point, inlier
+    mask, inlier length)."""
+    rng = np.random.default_rng(seed)
+    hom = lambda P: np.c_[P, np.ones(len(P))]  # noqa: E731
+    lines = np.cross(hom(L[:, :2]), hom(L[:, 2:]))
+    mid = (L[:, :2] + L[:, 2:]) / 2
+    d = (L[:, 2:] - L[:, :2]) / ln[:, None]
+    best = (None, None, 0.0)
+    for _ in range(iters):
+        i, j = rng.choice(len(L), 2, replace=False, p=ln / ln.sum())
+        v = np.cross(lines[i], lines[j])
+        if abs(v[2]) < 1e-9:
+            continue
+        v = v[:2] / v[2]
+        to = v - mid
+        to /= np.linalg.norm(to, axis=1, keepdims=True) + 1e-12
+        inl = np.abs(to[:, 0] * d[:, 1] - to[:, 1] * d[:, 0]) < np.sin(np.radians(tol_deg))
+        if ln[inl].sum() > best[2]:
+            best = (v, inl, float(ln[inl].sum()))
+    if best[0] is None:
+        return best
+    # Refine: the point closest (length-weighted least squares, distances to
+    # the lines) to the inlier lines, then re-collect the inliers.
+    nrm = lines[:, :2] / np.linalg.norm(lines[:, :2], axis=1, keepdims=True)
+    c = -lines[:, 2] / np.linalg.norm(lines[:, :2], axis=1)
+    v, inl = best[0], best[1]
+    for _ in range(3):
+        if inl.sum() < 2:
+            break
+        wgt = ln[inl]
+        A = nrm[inl] * wgt[:, None]
+        v = np.linalg.lstsq(A.T @ nrm[inl], A.T @ c[inl], rcond=None)[0]
+        to = v - mid
+        to /= np.linalg.norm(to, axis=1, keepdims=True) + 1e-12
+        inl = np.abs(to[:, 0] * d[:, 1] - to[:, 1] * d[:, 0]) < np.sin(np.radians(tol_deg))
+    return v, inl, float(ln[inl].sum())
+
+
+def find_vp_segments(image: np.ndarray, tol_deg: float = 1.0, n: int = 161):
+    """VP voted by straight line segments (LSD), each weighted by its length.
+    Long room edges dominate, and short texture edges (a painting's brush
+    strokes and cracks, a carpet's pattern) count for little. Searched over
+    the central 80% of the image. Full-res pixels, or None."""
+    try:
+        L, ln = _segments(image)
+    except ImportError:
+        return None
+    if len(L) < 4:
+        return None
+    h, w = image.shape[:2]
+    X, Y = np.meshgrid(np.linspace(0.1 * w, 0.9 * w, n), np.linspace(0.1 * h, 0.9 * h, n))
+    mid = (L[:, :2] + L[:, 2:]) / 2
+    d = (L[:, 2:] - L[:, :2]) / ln[:, None]
+    sc = np.zeros(X.shape)
+    sin_tol = np.sin(np.radians(tol_deg))
+    for (mx, my), (dx, dy), length in zip(mid, d, ln):
+        vx, vy = X - mx, Y - my
+        sc += length * (np.abs(vx * dy - vy * dx) < sin_tol * (np.hypot(vx, vy) + 1e-9))
+    i = int(np.argmax(sc))
+    return float(X.ravel()[i]), float(Y.ravel()[i])
+
+
+def find_distance_points(image: np.ndarray, min_inliers: int = 6, min_share: float = 0.3, seed: int = 0):
+    """The painter's distance-point construction, run backwards. Square tiles
+    laid at 45 degrees to the room have edges that converge to two points
+    on the horizon, at VP -+ f. So the VP is their midpoint, and half their
+    separation is the focal length in pixels. Returns (vp, f, support) in
+    full-res pixels, support being the total length of the two families'
+    segments that meet at their points, or None if the photo shows no such
+    pair of line families."""
+    try:
+        L, ln = _segments(image)
+    except ImportError:
+        return None
+    h, w = image.shape[:2]
+    d = L[:, 2:] - L[:, :2]
+    rising = d[:, 0] * d[:, 1] > 0  # image y grows downward
+    pts, support = [], 0.0
+    for fam in (rising, ~rising):
+        if fam.sum() < min_inliers:
+            return None
+        v, inl, length = _ransac_point(L[fam], ln[fam], seed=seed)
+        if v is None or inl.sum() < min_inliers or length < min_share * ln[fam].sum():
+            return None
+        pts.append(v)
+        support += length
+    (x1, y1), (x2, y2) = sorted(pts, key=lambda p: p[0])
+    # Each family alone is a bundle of nearly parallel lines, whose meeting
+    # point slides along the bundle. So fit the whole construction jointly:
+    # (vx, vy, f) with distance points (vx -+ f, vy) and the room's receding
+    # lines at (vx, vy), by a soft inlier count of all segments weighted by
+    # length squared (short segments, e.g. small tiles near the horizon,
+    # have biased directions).
+    vx, vy, f = (x1 + x2) / 2, (y1 + y2) / 2, (x2 - x1) / 2
+    mid = (L[:, :2] + L[:, 2:]) / 2
+    dirs = d / np.linalg.norm(d, axis=1, keepdims=True)
+    sin_tol = np.sin(np.radians(0.5))
+    wgt = ln ** 2
+
+    def score(prm):
+        cx, cy, ff = prm
+        best = np.zeros(len(L))
+        for px in (cx - ff, cx, cx + ff):
+            to = np.array([px, cy]) - mid
+            sn = np.abs(to[:, 0] * dirs[:, 1] - to[:, 1] * dirs[:, 0]) / (np.linalg.norm(to, axis=1) + 1e-9)
+            best = np.maximum(best, np.clip(1 - (sn / sin_tol) ** 2, 0, None))
+        return float((wgt * best).sum())
+
+    # Coarse grid around the per-family estimate, then local refinement.
+    h_, w_ = image.shape[:2]
+    best_grid = (score([vx, vy, f]), [vx, vy, f])
+    for cx in vx + np.arange(-0.04, 0.0401, 0.01) * w_:
+        for cy in vy + np.arange(-0.06, 0.0601, 0.005) * h_:
+            for ff in f * np.arange(0.85, 1.151, 0.01):
+                sc_ = score([cx, cy, ff])
+                if sc_ > best_grid[0]:
+                    best_grid = (sc_, [cx, cy, ff])
+    cur, prm = best_grid
+    for step in (32.0, 16.0, 8.0, 4.0, 2.0, 1.0, 0.5):
+        moved = True
+        while moved:
+            moved = False
+            for i in range(3):
+                for sg in (-1, 1):
+                    cand = list(prm)
+                    cand[i] += sg * step
+                    sc_ = score(cand)
+                    if sc_ > cur + 1e-9:
+                        prm, cur, moved = cand, sc_, True
+    vx, vy, f = prm
+    x1, x2, y1, y2 = vx - f, vx + f, vy, vy
+    vp = (vx, vy)
+    f35 = f / max(w, h) * 36
+    if (abs(y1 - y2) > 0.05 * h or x1 > 0.1 * w or x2 < 0.9 * w or not (0.1 * w < vp[0] < 0.9 * w)
+            or not (0.1 * h < vp[1] < 0.9 * h) or not (15 < f35 < 120)):
+        return None
+    return vp, float(f), support
+
+
+def explained_length(L, ln, vp, tol_deg: float = 1.0) -> float:
+    """Total length of the segments that point at vp."""
+    mid = (L[:, :2] + L[:, 2:]) / 2
+    d = (L[:, 2:] - L[:, :2]) / ln[:, None]
+    v = np.asarray(vp, float) - mid
+    ok = np.abs(v[:, 0] * d[:, 1] - v[:, 1] * d[:, 0]) < np.sin(np.radians(tol_deg)) * np.linalg.norm(v, axis=1)
+    return float(ln[ok].sum())
 
 
 def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, deeper: bool = True,
@@ -812,22 +983,66 @@ def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, d
     """Run the detector on an RGB/gray float image; returns full-res coords."""
     small, s = downscale(image, max_side)
     gray = to_gray(small)
-    vp = find_vanishing_point(gray, seed=seed)
     gx, gy = gradients(gray, sigma=1.0)
-    # The edge-vote VP leans toward wherever most texture is (often the far
-    # end of a corridor). Refine it jointly with the back wall: the room's
-    # four big junction lines are the most reliable evidence.
+    # VP candidates: the edge vote, the line-segment vote, and the midpoint of the distance points
+    # if the floor (tiles laid diagonally) shows them. Each is refined
+    # jointly with the back wall, since the room's four big junction lines
+    # are the most reliable evidence (the edge vote leans toward wherever
+    # most texture is, often the far end of a corridor), and the best
+    # back-wall fit wins. Candidates that explain much less of the image's
+    # long straight lines than the best one (a painting's brush strokes can
+    # mislead the edge vote) are dropped first.
+    starts = [(find_vanishing_point(gray, seed=seed), None)]
+    sv = find_vp_segments(image)
+    if sv is not None:
+        starts.append(((sv[0] * s, sv[1] * s), None))
+    dp = find_distance_points(image, seed=seed)
+    if dp is not None:
+        starts.append(((dp[0][0] * s, dp[0][1] * s), dp[1]))
+    evidence = lambda v, f: 0.0  # noqa: E731
+    if len(starts) > 1:
+        try:
+            L, ln = _segments(image)
+        except ImportError:
+            L = None
+        if L is not None and len(L):
+            def evidence(v, f, tol=2.0):
+                """Line length explained by VP v (small-image px), plus the two
+                distance-point families if f (full-res px) is given."""
+                x, y = v[0] / s, v[1] / s
+                e = explained_length(L, ln, (x, y), tol)
+                if f is not None:
+                    e += explained_length(L, ln, (x - f, y), tol) + explained_length(L, ln, (x + f, y), tol)
+                return e
+            expl = [evidence(v, f) for v, f in starts]
+            starts = [st for st, e in zip(starts, expl) if e >= 0.5 * max(expl)]
     best = None
-    for r in (6, 2):
-        center = vp if best is None else best[0]
-        for dx in range(-r * 2, r * 2 + 1, r):
-            for dy in range(-r * 2, r * 2 + 1, r):
-                cand = (center[0] + dx, center[1] + dy)
-                bw, score = find_back_wall(gx, gy, cand)
-                if best is None or score > best[2]:
-                    best = (cand, bw, score)
-    vp, bw, _ = best
-    vp, _ = refine_vp_from_corners(gx, gy, vp, bw)
+    for vp0, focal in starts:
+        b = None
+        e0 = evidence(vp0, focal)
+        for r in (6, 2):
+            center = vp0 if b is None else b[0]
+            for dx in range(-r * 2, r * 2 + 1, r):
+                for dy in range(-r * 2, r * 2 + 1, r):
+                    cand = (center[0] + dx, center[1] + dy)
+                    # Don't drift off what the long lines say.
+                    if (dx or dy) and evidence(cand, focal) < 0.7 * e0:
+                        continue
+                    try:
+                        bw, score = find_back_wall(gx, gy, cand)
+                    except ValueError:  # too close to the border for a back wall
+                        continue
+                    if b is None or score > b[2]:
+                        b = (cand, bw, score)
+        if b is not None and (best is None or b[2] > best[2]):
+            best = (*b, focal)
+    if best is None:
+        raise ValueError("no vanishing point with a plausible back wall")
+    vp, bw, _, focal_px = best
+    e_vp = evidence(vp, focal_px)
+    vp_r, _ = refine_vp_from_corners(gx, gy, vp, bw)
+    if evidence(vp_r, focal_px) >= 0.7 * e_vp:
+        vp = vp_r
     # Furniture edges can pose as room edges. If there are room-aligned
     # objects, find the back wall again with their image footprints masked out.
     rgx, rgy = gx, gy
@@ -855,7 +1070,7 @@ def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, d
     bw_full = [round(to_full(v), 1) for v in bw]
     segs_full = [[round(to_full(v), 1) for v in r] for r in segs]
     objs_full = [([round(float(to_full(v)), 1) for v in front], round(float(to_full(back_y)), 1)) for front, back_y, _ in objs]
-    return AutoResult(vp_full, bw_full, rays, segs_full, seg_scores, objs_full)
+    return AutoResult(vp_full, bw_full, rays, segs_full, seg_scores, objs_full, focal_px)
 
 
 def add_solids(ann: Annotation, image: np.ndarray) -> Annotation:
@@ -898,7 +1113,11 @@ def auto_annotate(image_path: str, image: np.ndarray | None = None, solids: bool
     r = auto_annotate_array(image, **kw)
     from .annotations import RoomObject
 
-    ann = Annotation(image=str(image_path), vanishing_point=r.vanishing_point, back_wall=tuple(r.back_wall),
+    if r.focal_px is not None:
+        kw_f = {"focal_35mm": round(r.focal_px / max(image.shape[:2]) * 36, 2)}
+    else:
+        kw_f = {}
+    ann = Annotation(image=str(image_path), vanishing_point=r.vanishing_point, back_wall=tuple(r.back_wall), **kw_f,
                      segments=r.segments or [],
                      objects=[RoomObject(f"object{i + 1}", list(f), b) for i, (f, b) in enumerate(r.objects or [])])
     if solids:

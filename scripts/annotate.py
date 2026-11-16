@@ -42,7 +42,8 @@ def main():
     ap.add_argument("-o", "--out", help="annotation path (default data/annotations/<image name>.json)")
     ap.add_argument("--auto-only", action="store_true", help="run detection and save without opening a window")
     ap.add_argument("--no-solids", action="store_true", help="skip the solid (vase, extinguisher) detector")
-    ap.add_argument("--focal-35mm", type=float, default=26.0)
+    ap.add_argument("--focal-35mm", type=float, default=None,
+                    help="35mm-equivalent focal length (default: measured from floor distance points if found, else 26)")
     ap.add_argument("--camera-height", type=float, default=1.6)
     a = ap.parse_args()
 
@@ -56,6 +57,8 @@ def main():
         print("auto-detecting vanishing point and back wall ...")
         r = auto_annotate_array(image)
         print(f"  vanishing point {r.vanishing_point}, back wall {r.back_wall}")
+        if r.focal_px:
+            print(f"  focal length from floor distance points: {r.focal_px:.0f} px")
         for i, seg in enumerate(r.segments or [], start=1):
             print(f"  deeper box {i}: {seg}")
         for i, (front, back_y) in enumerate(r.objects or [], start=1):
@@ -64,7 +67,7 @@ def main():
             image=rel(src),
             vanishing_point=r.vanishing_point,
             back_wall=tuple(r.back_wall),
-            focal_35mm=a.focal_35mm,
+            focal_35mm=a.focal_35mm or (round(r.focal_px / max(image.shape[:2]) * 36, 2) if r.focal_px else 26.0),
             camera_height=a.camera_height,
             segments=r.segments or [],
             objects=[RoomObject(f"object{i + 1}", list(f), b) for i, (f, b) in enumerate(r.objects or [])],
