@@ -237,7 +237,7 @@ def _edge_terms(gx, gy, X1, X2, Y1, Y2):
     return h_edge(Y2), h_edge(Y1), v_edge(X1), v_edge(X2)
 
 
-def _search_rect(gx, gy, vp, X1, X2, Y1, Y2, bound=None, valid=None):
+def _search_rect(gx, gy, vp, X1, X2, Y1, Y2, bound=None, valid=None, extra=None):
     """Exhaustive search over rectangles with x1 in X1, x2 in X2, y1 in Y1 and
     y2 in Y2:
 
@@ -265,6 +265,8 @@ def _search_rect(gx, gy, vp, X1, X2, Y1, Y2, bound=None, valid=None):
         + E_b[:, :, None, :] + E_t[:, :, :, None]
         + 0.5 * (V_l[:, None, :, :] + V_r[None, :, :, :])
     )
+    if extra is not None:  # further per-rectangle terms, same 4D shape
+        S = S + extra
     if valid is not None:
         ok = valid(X1[:, None, None, None], X2[None, :, None, None], Y1[None, None, :, None], Y2[None, None, None, :])
         S = np.where(ok, S, -np.inf)
@@ -275,8 +277,88 @@ def _search_rect(gx, gy, vp, X1, X2, Y1, Y2, bound=None, valid=None):
     return [float(X1[i1]), float(Y1[j1]), float(X2[i2]), float(Y2[j2])], float(S.ravel()[k])
 
 
-def find_back_wall(gx, gy, vp, step: int = 4, min_frac: float = 0.06):
-    """Best back-wall rectangle [x1, y1, x2, y2] anywhere in the image, and its score."""
+def split_gain_terms(lab: np.ndarray, vp, X1, X2, Y1, Y2, n_theta: int = 720) -> np.ndarray:
+    """How well each candidate back wall splits the image into room surfaces.
+
+    Every room surface but the back wall runs along the depth axis (a wall's
+    paint and baseboard, the floor, the ceiling), so along a ray from the VP
+    its colour changes little, until the ray crosses the back wall's edge.
+    So each ray is fitted with two constant pieces, back wall up to the
+    rectangle and side surface beyond, and the score is the colour variance
+    that this split explains, averaged over rays (Lab^2 units). A rectangle
+    hugging a piece of furniture splits the rays where nothing changes, and
+    puts real wall corners in the middle of a piece.
+
+    Each ray's split depends only on the side of the rectangle it hits and
+    that side's position, so the gains are tabulated per ray and side
+    position, and summed over the angular sector of each side with
+    cumulative sums. Returns a (len(X1), len(X2), len(Y1), len(Y2)) array."""
+    import cv2
+
+    h, w = lab.shape[:2]
+    vx, vy = vp
+    rmax = float(np.hypot(max(vx, w - vx), max(vy, h - vy))) + 2
+    th = -np.pi + (np.arange(n_theta) + 0.5) * 2 * np.pi / n_theta
+    rr = np.arange(0.0, rmax, 1.0)
+    U = (vx + np.cos(th)[:, None] * rr[None]).astype(np.float32)
+    V = (vy + np.sin(th)[:, None] * rr[None]).astype(np.float32)
+    P = cv2.remap(lab.astype(np.float32), U, V, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+    valid = (U >= 0) & (U <= w - 1) & (V >= 0) & (V <= h - 1)
+    P = np.where(valid[..., None], P, 0.0)
+    cs = lambda a: np.concatenate([np.zeros((n_theta, 1) + a.shape[2:]), np.cumsum(a, axis=1)], axis=1)  # noqa: E731
+    N, S, Q = cs(valid.astype(float)), cs(P.astype(float)), cs((P.astype(float) ** 2).sum(-1))
+    R = N.shape[1] - 1
+    k = np.arange(n_theta)[:, None]
+
+    def sse(a, b):
+        n = N[k, b] - N[k, a]
+        sm = S[k, b] - S[k, a]
+        return Q[k, b] - Q[k, a] - (sm ** 2).sum(-1) / np.maximum(n, 1)
+
+    whole = sse(np.zeros((n_theta, 1), int), np.full((n_theta, 1), R))
+    n_all = np.maximum(N[:, -1:], 1)
+    c, sn = np.cos(th)[:, None], np.sin(th)[:, None]
+
+    def gains(pos, along_x: bool):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            r = (pos[None, :] - (vx if along_x else vy)) / (c if along_x else sn)
+        rb = np.clip(np.round(np.where(np.isfinite(r) & (r > 0), r, R)), 0, R).astype(int)
+        g = (whole - sse(np.zeros_like(rb), rb) - sse(rb, np.full_like(rb, R))) / n_all
+        return np.concatenate([np.zeros((1, len(pos))), np.cumsum(g, axis=0)], axis=0)  # cumulative over angle
+
+    CL, CR, CT, CB = gains(X1.astype(float), True), gains(X2.astype(float), True), gains(Y1.astype(float), False), gains(Y2.astype(float), False)
+
+    def idx(x, y):  # number of ray angles below the corner's angle
+        a = np.arctan2(y - vy, x - vx)
+        return np.clip(np.floor((a + np.pi) / (2 * np.pi) * n_theta + 0.5).astype(int), 0, n_theta)
+
+    x1, x2 = X1[:, None, None, None].astype(float), X2[None, :, None, None].astype(float)
+    y1, y2 = Y1[None, None, :, None].astype(float), Y2[None, None, None, :].astype(float)
+    i1 = np.arange(len(X1))[:, None, None, None]
+    i2 = np.arange(len(X2))[None, :, None, None]
+    j1 = np.arange(len(Y1))[None, None, :, None]
+    j2 = np.arange(len(Y2))[None, None, None, :]
+    tl, tr, br, bl = idx(x1, y1), idx(x2, y1), idx(x2, y2), idx(x1, y2)
+    # Angles grow clockwise on screen (y down): TL (~-3pi/4) -> TR -> BR -> BL (~+3pi/4).
+    top = CT[tr, j1] - CT[tl, j1]
+    right = CR[br, i2] - CR[tr, i2]
+    bottom = CB[bl, j2] - CB[br, j2]
+    left = CL[n_theta, i1] - CL[bl, i1] + CL[tl, i1]
+    return ((top + right + bottom + left) / n_theta).astype(np.float32)
+
+
+def find_back_wall(gx, gy, vp, step: int = 4, min_frac: float = 0.06, lab: np.ndarray | None = None,
+                   split_weight: float = 3e-4, max_bottom: float | None = None):
+    """Best back-wall rectangle [x1, y1, x2, y2] anywhere in the image, and its score.
+
+    With lab (the Lab image), the edge score is joined by split_weight times
+    split_gain_terms: how well the rectangle splits the rays from the VP into
+    back wall and room surfaces. Edges place the wall precisely where the
+    room's corners are crisp; the split finds it where they are soft (paintings),
+    against crisp furniture outlines.
+
+    max_bottom: the bottom edge must be at or above this row (the floor is
+    seen up to there, e.g. its tiles, and the back wall can't hold floor)."""
     h, w = gx.shape
     vx, vy = vp
     m = int(min_frac * min(h, w))
@@ -284,7 +366,12 @@ def find_back_wall(gx, gy, vp, step: int = 4, min_frac: float = 0.06):
     X2 = np.arange(int(vx) + m, w - 2, step)
     Y1 = np.arange(2, int(vy) - m, step)
     Y2 = np.arange(int(vy) + m, h - 2, step)
-    rect, score = _search_rect(gx, gy, vp, X1, X2, Y1, Y2)
+    if max_bottom is not None and (Y2 <= max_bottom).any():
+        Y2 = Y2[Y2 <= max_bottom]
+    extra = None
+    if lab is not None and min(len(X1), len(X2), len(Y1), len(Y2)) > 0:
+        extra = split_weight * split_gain_terms(lab, vp, X1, X2, Y1, Y2)
+    rect, score = _search_rect(gx, gy, vp, X1, X2, Y1, Y2, extra=extra)
     if rect is None:
         raise ValueError("vanishing point too close to the image border for a back wall")
     return rect, score
@@ -474,8 +561,10 @@ def find_opening(gx, gy, vp, back_wall, inner=None, step: int = 2, min_px: int =
     vx, vy = vp
     bx1, by1, bx2, by2 = back_wall
     ix1, iy1, ix2 = (inner[0], inner[1], inner[2]) if inner is not None else (vx - min_px, vy - min_px, vx + min_px)
-    X1 = np.arange(int(np.ceil(bx1)), int(min(vx - min_px, ix1)) + 1, step)
-    X2 = np.arange(int(np.ceil(max(vx + min_px, ix2))), int(bx2) + 1, step)
+    # Jambs stand clear of the wall's own corners (a corner is no jamb).
+    margin = 0.03 * (bx2 - bx1)
+    X1 = np.arange(int(np.ceil(bx1 + margin)), int(min(vx - min_px, ix1)) + 1, step)
+    X2 = np.arange(int(np.ceil(max(vx + min_px, ix2))), int(bx2 - margin) + 1, step)
     Y1 = np.arange(int(np.ceil(by1 + min_lintel * (by2 - by1))), int(min(vy - min_px, iy1)) + 1, step)
     if min(len(X1), len(X2), len(Y1)) == 0:
         return None, 0.0
@@ -502,6 +591,16 @@ def find_opening(gx, gy, vp, back_wall, inner=None, step: int = 2, min_px: int =
     # A box thickness x the room's depth deep ends at this floor row.
     bottom = vy + (by2 - vy) / (1.0 + thickness)
     return [float(X1[a]), float(Y1[c]), float(X2[b]), float(bottom)], float(score.ravel()[k])
+
+
+def _seen_through_opening(back_wall, first, min_band: float = 0.08) -> bool:
+    """True if the first deeper box leaves a clear band of back wall around
+    it (at least min_band of the wall's width or height on some side
+    besides the bottom), so the back wall really has an opening in it."""
+    bx1, by1, bx2, by2 = back_wall
+    x1, y1, x2, _ = first
+    W, H = bx2 - bx1, by2 - by1
+    return max((x1 - bx1) / W, (bx2 - x2) / W, (y1 - by1) / H) >= min_band
 
 
 # --------------------------------------------------------------------------- room-aligned objects
@@ -808,6 +907,18 @@ class AutoResult:
     focal_px: float | None = None  # measured from distance points, if the floor shows them
 
 
+def _lab(img: np.ndarray):
+    """Lab image (float) of an RGB image in [0, 1], or None for gray / no OpenCV."""
+    if img.ndim != 3:
+        return None
+    try:
+        import cv2
+    except ImportError:
+        return None
+    # 8-bit Lab (L, a, b each 0-255), the same scale as tip.revolve.
+    return cv2.cvtColor((np.clip(img, 0, 1) * 255).astype(np.uint8), cv2.COLOR_RGB2LAB).astype(np.float32)
+
+
 # --------------------------------------------------------------------------- distance points
 def _segments(image: np.ndarray, max_side: int = 1000, min_frac: float = 0.02, margin_deg: float = 12.0):
     """Straight line segments (OpenCV's LSD), longer than min_frac of the
@@ -896,9 +1007,11 @@ def find_distance_points(image: np.ndarray, min_inliers: int = 6, min_share: flo
     """The painter's distance-point construction, run backwards. Square tiles
     laid at 45 degrees to the room have edges that converge to two points
     on the horizon, at VP -+ f. So the VP is their midpoint, and half their
-    separation is the focal length in pixels. Returns (vp, f, support) in
-    full-res pixels, support being the total length of the two families'
-    segments that meet at their points, or None if the photo shows no such
+    separation is the focal length in pixels. Returns (vp, f, support,
+    floor_top) in full-res pixels: support is the total length of the two
+    families' segments that meet at their points, floor_top the highest row
+    the tiles reach (the floor's far edge; None if none below the horizon).
+    None if the photo shows no such
     pair of line families."""
     try:
         L, ln = _segments(image)
@@ -907,7 +1020,7 @@ def find_distance_points(image: np.ndarray, min_inliers: int = 6, min_share: flo
     h, w = image.shape[:2]
     d = L[:, 2:] - L[:, :2]
     rising = d[:, 0] * d[:, 1] > 0  # image y grows downward
-    pts, support = [], 0.0
+    pts, support, tiles = [], 0.0, []
     for fam in (rising, ~rising):
         if fam.sum() < min_inliers:
             return None
@@ -916,6 +1029,7 @@ def find_distance_points(image: np.ndarray, min_inliers: int = 6, min_share: flo
             return None
         pts.append(v)
         support += length
+        tiles.append(L[fam][inl])
     (x1, y1), (x2, y2) = sorted(pts, key=lambda p: p[0])
     # Each family alone is a bundle of nearly parallel lines, whose meeting
     # point slides along the bundle. So fit the whole construction jointly:
@@ -966,7 +1080,12 @@ def find_distance_points(image: np.ndarray, min_inliers: int = 6, min_share: flo
     if (abs(y1 - y2) > 0.05 * h or x1 > 0.1 * w or x2 < 0.9 * w or not (0.1 * w < vp[0] < 0.9 * w)
             or not (0.1 * h < vp[1] < 0.9 * h) or not (15 < f35 < 120)):
         return None
-    return vp, float(f), support
+    # The tiled floor's far edge: the highest tile-edge point below the horizon.
+    T = np.concatenate(tiles)
+    ys = np.concatenate([T[:, 1], T[:, 3]])
+    below = ys[ys > vp[1] + 0.02 * h]
+    floor_top = float(below.min()) if len(below) else None
+    return vp, float(f), support, floor_top
 
 
 def explained_length(L, ln, vp, tol_deg: float = 1.0) -> float:
@@ -984,6 +1103,7 @@ def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, d
     small, s = downscale(image, max_side)
     gray = to_gray(small)
     gx, gy = gradients(gray, sigma=1.0)
+    lab = _lab(small)
     # VP candidates: the edge vote, the line-segment vote, and the midpoint of the distance points
     # if the floor (tiles laid diagonally) shows them. Each is refined
     # jointly with the back wall, since the room's four big junction lines
@@ -999,6 +1119,7 @@ def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, d
     dp = find_distance_points(image, seed=seed)
     if dp is not None:
         starts.append(((dp[0][0] * s, dp[0][1] * s), dp[1]))
+    floor_top = dp[3] * s if dp is not None and dp[3] is not None else None
     evidence = lambda v, f: 0.0  # noqa: E731
     if len(starts) > 1:
         try:
@@ -1029,7 +1150,8 @@ def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, d
                     if (dx or dy) and evidence(cand, focal) < 0.7 * e0:
                         continue
                     try:
-                        bw, score = find_back_wall(gx, gy, cand)
+                        bw, score = find_back_wall(gx, gy, cand, lab=lab,
+                                                   max_bottom=floor_top if focal is not None else None)
                     except ValueError:  # too close to the border for a back wall
                         continue
                     if b is None or score > b[2]:
@@ -1053,7 +1175,7 @@ def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, d
         polys = [object_footprint(f, b, vp) for f, b, _ in first]
         keep = ~polygon_mask(polys, gx.shape[1], gx.shape[0], dilate=2)
         rgx, rgy = gx * keep, gy * keep
-        bw, _ = find_back_wall(rgx, rgy, vp)
+        bw, _ = find_back_wall(rgx, rgy, vp, lab=lab, max_bottom=floor_top if focal_px is not None else None)
     rays = rays_from_rect(vp, bw)
     segs, seg_scores = (find_deeper_boxes(rgx, rgy, vp, bw) if deeper else ([], []))
     if segs:
@@ -1062,6 +1184,12 @@ def auto_annotate_array(image: np.ndarray, max_side: int = 640, seed: int = 0, d
         frame, frame_score = find_opening(rgx, rgy, vp, bw, inner=segs[0])
         if frame is not None and frame[3] > segs[0][3]:
             segs, seg_scores = [frame] + segs, [frame_score] + list(seg_scores)
+        elif frame is None and not _seen_through_opening(bw, segs[0]):
+            # Further boxes are seen through an opening in the back wall: a
+            # doorway (found above), or at least a clear band of wall around
+            # the first box. A "box" that nearly fills the back wall, with no
+            # doorway, is furniture or a niche (paintings), not a corridor.
+            segs, seg_scores = [], []
     objs = find_room_objects(gx, gy, vp, [bw] + segs) if objects else []
     inv = 1.0 / s
     # Map back to full-res pixel coordinates (pixel centers).

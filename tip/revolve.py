@@ -637,14 +637,19 @@ def straight_edge_support(gy, vp, c: float, hw: float, y: float, thr: float, sea
 # --------------------------------------------------------------------------- main
 def find_solids(image: np.ndarray, scene, max_side: int = 800, min_height_px: int = 24,
                 size_range=(0.12, 2.2), max_radius: float = 0.6, max_candidates: int = 60, min_outline: float = 0.5,
-                min_sides: float = 0.5, min_halfwidth_px: float = 8.0, debug: list | None = None, proposals: str | None = None) -> list[Solid]:
+                min_sides: float = 0.5, min_halfwidth_px: float = 8.0, min_rim: float = 0.8, debug: list | None = None, proposals: str | None = None) -> list[Solid]:
     """Detect upright surfaces of revolution in a photo whose room geometry
     (scene, from geometry.build_scene) is known. Returns full-res Solids.
 
     proposals: "room" (default when OpenCV is installed): regions that differ
     from the empty-room background, traced with OpenCV's GrabCut, axes from
     the mask's symmetry. "seeds" (pure numpy): mirror-symmetric edge pairs,
-    traced with symmetric_grabcut."""
+    traced with symmetric_grabcut.
+
+    A candidate is kept only if one of its rims (the projected top or bottom
+    circle) is clearly better supported by edges than a straight line there,
+    and well supported itself (>= min_rim): a flat rectangle on a wall (a
+    door's lower panel) can half-match a rim by chance."""
     from .geometry import solid_geometry
 
     if proposals is None:
@@ -774,7 +779,7 @@ def find_solids(image: np.ndarray, scene, max_side: int = 800, min_height_px: in
                     cd.update(height=height, D=D, outline=round_, flat=flat)
                     if max(round_) < min_outline:
                         why = f"top/bottom outline not in the image ({max(round_):.0%})"
-                    elif not any(r_ > f_ + 0.15 and r_ >= min_outline for r_, f_ in zip(round_, flat)):
+                    elif not any(r_ > f_ + 0.15 and r_ >= min_rim for r_, f_ in zip(round_, flat)):
                         why = f"flat on the wall (rims {round_[0]:.0%}/{round_[1]:.0%} vs lines {flat[0]:.0%}/{flat[1]:.0%})"
         cd["why"] = why
         cd["solid"] = sol

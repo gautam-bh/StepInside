@@ -139,7 +139,7 @@ def test_distance_points_give_vp_and_focal():
         img = synthetic_room(vp, bw, diagonal_tiles=True, focal_35mm=35.0)
         found = find_distance_points(img)
         assert found is not None
-        (x, y), f, _ = found
+        (x, y), f = found[:2]
         f_true = 35.0 / 36 * 800
         assert np.hypot(x - vp[0], y - vp[1]) < 6, (found, vp)
         assert abs(f - f_true) / f_true < 0.03, (f, f_true)
