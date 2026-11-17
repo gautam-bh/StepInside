@@ -42,6 +42,7 @@ def main():
     ap.add_argument("-o", "--out", help="annotation path (default data/annotations/<image name>.json)")
     ap.add_argument("--auto-only", action="store_true", help="run detection and save without opening a window")
     ap.add_argument("--no-solids", action="store_true", help="skip the solid (vase, extinguisher) detector")
+    ap.add_argument("--no-cutouts", action="store_true", help="skip standing cutouts (people, chairs; needs Segment Anything)")
     ap.add_argument("--focal-35mm", type=float, default=None,
                     help="35mm-equivalent focal length (default: measured from floor distance points if found, else 26)")
     ap.add_argument("--camera-height", type=float, default=1.6)
@@ -89,6 +90,17 @@ def main():
             for t in ann.tubes:
                 print(f"  {t.name}: near {t.near[0]:.0f},{t.near[1]:.0f} far {t.far[0]:.0f},{t.far[1]:.0f}, "
                       f"half-angle {t.half_angle * 57.3:.2f} deg")
+        if not a.no_cutouts:
+            from tip.auto_annotate import add_cutouts
+            from tip.cutouts import sam_available
+
+            if sam_available():
+                print("detecting standing cutouts (room geometry + Segment Anything tracing) ...")
+                add_cutouts(ann, image)
+                for fg in ann.foreground:
+                    print(f"  {fg.name}: {len(fg.polygon)}-point outline, on the floor at row {fg.contact_y:.0f}")
+            else:
+                print("skipping standing cutouts: pip install segment-anything and put sam_vit_b_01ec64.pth in models/")
 
     out.parent.mkdir(parents=True, exist_ok=True)
     if a.auto_only:

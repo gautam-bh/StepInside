@@ -29,7 +29,7 @@
       "kind": "box",
       "segment": 0,
       "texture": "s0_floor.png",
-      "hole_fraction": 0.1504,
+      "hole_fraction": 0.3491,
       "corners": [
         [
           -7.95294,
@@ -89,7 +89,7 @@
       "kind": "box",
       "segment": 0,
       "texture": "s0_left.png",
-      "hole_fraction": 0.589,
+      "hole_fraction": 0.634,
       "corners": [
         [
           -7.95294,
@@ -119,7 +119,7 @@
       "kind": "box",
       "segment": 0,
       "texture": "s0_right.png",
-      "hole_fraction": 0.1596,
+      "hole_fraction": 0.1812,
       "corners": [
         [
           1.791,
@@ -149,7 +149,7 @@
       "kind": "box",
       "segment": 0,
       "texture": "s0_back.png",
-      "hole_fraction": 0.0,
+      "hole_fraction": 0.1335,
       "corners": [
         [
           -7.95294,
@@ -668,6 +668,122 @@
         ]
       },
       "texture_filled": "t_tube1_filled.jpg"
+    },
+    {
+      "name": "fg_cutout1",
+      "kind": "foreground",
+      "segment": 0,
+      "texture": "fg_cutout1.png",
+      "hole_fraction": 0.1818,
+      "corners": [
+        [
+          -0.37731,
+          -0.16735,
+          -5.35186
+        ],
+        [
+          0.93802,
+          -0.16735,
+          -5.35186
+        ],
+        [
+          0.93802,
+          -1.6,
+          -5.35186
+        ],
+        [
+          -0.37731,
+          -1.6,
+          -5.35186
+        ]
+      ]
+    },
+    {
+      "name": "fg_cutout1a",
+      "kind": "foreground",
+      "segment": 0,
+      "texture": "fg_cutout1a.png",
+      "hole_fraction": 0.5409,
+      "corners": [
+        [
+          -0.31555,
+          1.2406,
+          -5.35186
+        ],
+        [
+          1.05535,
+          1.2406,
+          -5.35186
+        ],
+        [
+          1.05535,
+          -0.09325,
+          -5.35186
+        ],
+        [
+          -0.31555,
+          -0.09325,
+          -5.35186
+        ]
+      ]
+    },
+    {
+      "name": "fg_cutout2",
+      "kind": "foreground",
+      "segment": 0,
+      "texture": "fg_cutout2.png",
+      "hole_fraction": 0.6266,
+      "corners": [
+        [
+          -8.50404,
+          1.14255,
+          -9.17715
+        ],
+        [
+          -7.30748,
+          1.14255,
+          -9.17715
+        ],
+        [
+          -7.30748,
+          -1.6,
+          -9.17715
+        ],
+        [
+          -8.50404,
+          -1.6,
+          -9.17715
+        ]
+      ]
+    },
+    {
+      "name": "fg_cutout3",
+      "kind": "foreground",
+      "segment": 0,
+      "texture": "fg_cutout3.png",
+      "hole_fraction": 0.6586,
+      "corners": [
+        [
+          -6.02883,
+          -0.06881,
+          -8.39895
+        ],
+        [
+          -4.90466,
+          -0.06881,
+          -8.39895
+        ],
+        [
+          -4.90466,
+          -1.6,
+          -8.39895
+        ],
+        [
+          -6.02883,
+          -1.6,
+          -8.39895
+        ]
+      ]
     }
   ]
 }

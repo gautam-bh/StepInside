@@ -32,11 +32,13 @@ On the hallway photo, the one room-aligned object is the gray trash bin 27 m dow
 
 <img src="outputs/hallway/wall_things_auto.jpg" width="820">
 
-**Paintings.** The same automatic pipeline runs on Carpaccio's *Saint Augustine in His Study* (c. 1502, public domain) with no hand input. The vanishing point lands on the saint's desk. The back wall is the far wall with the altar niche, not the niche itself, which used to fool the edge-only search. No false corridor boxes are added behind it. The dog, the books and the seal on the floor stand up as small solids. Moving the camera shows the room hold together (`python scripts/annotate.py data/images/st_augustine.jpg --auto-only`, then `scripts/render_views.py`):
+**Paintings.** The same automatic pipeline runs on Carpaccio's *Saint Augustine in His Study* (c. 1502, public domain) with no hand input. The vanishing point lands on the saint's desk. The back wall is the far wall with the altar niche, not the niche itself, which used to fool the edge-only search. No false corridor boxes are added behind it. The saint, his chair and the lectern stand up as cutouts on the floor, so moving the camera shows him in front of the cabinet and back wall rather than painted on them. The dog, the books and the seal on the floor stand up as small solids. Moving the camera shows the room hold together (`python scripts/annotate.py data/images/st_augustine.jpg --auto-only`, then `scripts/render_views.py`):
 
 | Automatic annotation | Novel views (top: holes in magenta, bottom: push-pull fill) |
 |---|---|
 | <img src="outputs/st_augustine/auto_annotation.jpg" width="300"> | <img src="outputs/st_augustine/contact_sheet.jpg" width="520"> |
+
+**Standing cutouts.** People and irregular furniture (neither room-aligned boxes nor round solids) become classic TIP billboards, found automatically. The room geometry decides *what* stands and *where*. Segment Anything only traces the outline, as the fallback for shapes classical tracing can't separate: a robed figure in a painting shares its colours with the walls and floor around it, so the empty-room background, per-surface colour models and GrabCut all fail on it. Details in step 7 below.
 
 ## Quick start
 
@@ -50,6 +52,9 @@ Any scene in `scenes/` shows up automatically. Titles and descriptions for known
 
 ```bash
 pip install -r requirements.txt          # numpy, pillow, matplotlib, opencv-python-headless (GrabCut)
+# optional, for standing cutouts (people, chairs): Segment Anything + its ViT-B checkpoint (375 MB, not in git)
+pip install segment-anything torch
+curl -L -o models/sam_vit_b_01ec64.pth https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
 
 # 1. Build the scene (geometry + per-plane textures) for the viewer
 python scripts/build_scene.py data/annotations/hallway.json
@@ -153,7 +158,11 @@ Good photos have one-point perspective (looking straight down the room), visible
 6. **Wall boxes and pipes** ([`tip/relief.py`](tip/relief.py), run by `auto_annotate`). Both start from the same empty-room proposals as the solids.
    - **Wall boxes** (`reliefs`). A box fixed to a side wall or the ceiling shows a near face, parallel to the image and so a true rectangle, and a front face parallel to the wall, whose top and bottom edges recede to the VP. The near face's outer edge lies on the wall. A wall at distance W seen p px from the VP is at depth z = f·W/p, so that edge alone fixes the depth. Its inner edge then gives how far the box sticks out, and the front face's far edge gives its length along the wall. One model covers a sign sticking out of the wall (long out, short along), an alarm box (the reverse), and a sign hanging from the ceiling (the same, with the ceiling as the wall). Each proposal is traced with GrabCut and tried against two hypotheses, box and flat, each fitted by coordinate ascent on the IoU between the trace and its silhouette (the convex hull of the projected 3D box). The overlap pins the front corner only loosely, so the corner is then moved to the strongest real edge nearby. A box is kept only if it beats flat: either its silhouette fits clearly better, or the photo shows the near face's own outline (the corner edge, plus top and bottom edges running straight across rather than receding). The contact edge must border the wall it names. On a synthetic room with an alarm box, a wall sign, a hanging sign and a flat poster, the three boxes come back within 3 cm and the poster stays flat.
    - **Pipes** (`tubes`). A pipe along the depth axis has cross-section circles in planes z = const. Each projects to a circle, so the pipe is seen as a wedge between two lines through the VP with sin(half angle) = r/ρ, where ρ is the axis's distance from the optical axis. Touching the ceiling gives ρ, and so r. In a polar resampling about the VP, the pipe's edges are rays of constant angle. Each ray is scored by how much of the ceiling along it has a strong gradient across it. Neighbouring edge rays become a candidate when both edges are supported over the same long stretch and the inside differs in colour from the empty ceiling. It must also be smooth along its length (a cable tray's rungs are not), and edges must bound it on both sides at its full width. That width is measured in four stretches along the pipe, because real pipes drift slightly off the VP. On a synthetic room two pipes come back within 1 cm in position and radius. Pipes become `Cylinder` surfaces (three.js `CylinderGeometry`), with the unseen top mirrored from the visible underside.
-7. **Foreground.** Each outlined object becomes a billboard parallel to the image plane. Its depth comes from where its bottom meets the floor. Like classic TIP, billboards draw on top of the box.
+7. **Foreground.** Each outlined object becomes a billboard parallel to the image plane. Its depth comes from where its bottom meets the floor. Like classic TIP, billboards draw on top of the box. Automatically ([`tip/cutouts.py`](tip/cutouts.py), run by `auto_annotate` when Segment Anything and its checkpoint are installed):
+   - **Proposals.** SAM's automatic mask generator (ViT-B, CPU, about 25 s) proposes masks over the whole image.
+   - **What stands in the room is decided by the geometry.** A mask is kept if its lowest point is on the floor in front of the back wall, at least a quarter of it rises above the floor into a wall's image region (a rug or a book lying flat stays flat), and stood up there it is 0.4–3.5 m tall. Pieces of the room itself are rejected: a mask whose bottom runs along a floor/wall seam across most of its width, or whose outline mostly follows the seams between room surfaces (a strip of wall), or whose bottom recedes along a wall (a door). Masks overlapping solids are skipped.
+   - **Whole objects.** A kept mask is often a part (the saint's robe, below the desk that hides his waist). SAM is prompted again with a point at the part's centre and a box reaching up above it. Of its answers, the most stable one (least change between logit thresholds −1 and +1) that still covers the part wins: it is the whole figure, while the less stable answers leak into the cabinet behind him. All pieces of the result (the desk splits the figure in two) stand at the same floor contact.
+   - On the hallway this adds nothing (the extinguishers are already solids, the walls are rejected); on Carpaccio's *St Augustine* it stands up the saint, his chair and the lectern.
 8. **Rendering.** [`viewer/index.html`](viewer/index.html) uses three.js, with `setViewOffset` to reproduce the off-center principal point. [`tip/render.py`](tip/render.py) is a NumPy ray-caster that produces the same views for figures and tests. From the original camera it reproduces the input photo (checked in `tests/test_tip.py`).
 9. **Simple fill baseline.** `push_pull_fill` fills holes from a weighted image pyramid. It gives smooth color with no texture or line continuation, the "simple filling" baseline from the proposal.
 
@@ -194,6 +203,7 @@ tests/          test_tip.py (geometry/rendering) · test_annotation_tools.py (de
 - Solids are upright (no tilt), and a wall-hung solid is assumed to touch the wall. The yellow extinguisher hangs off a bracket and leans; with the auto room geometry the mount test calls it floor-standing, so it sits a few cm off. Small objects (under about 16 px wide at 800 px) are not judged.
 - Wall boxes are axis-aligned boxes, so a V-shaped two-sided sign becomes its bounding box. Thickness is only measured where the photo shows it (a near face at least 2 px wide at 800 px); a paper poster or the glass bulletin board, whose near end is out of frame, stays flat on the wall. Objects touching each other in the photo (a sign hanging in front of a pipe) can merge into one proposal and be rejected.
 - Pipes must run along the room's depth axis and touch the ceiling; cross pipes (along X) and pipes on hangers stay painted on the ceiling. The light fixture and cable tray are rejected, except that the tray's smooth side rail is taken as a pipe. Pipe widths come out about 20–30% thin on the hallway, where edges are soft at 800 px.
+- Standing cutouts are flat cards at one depth, so the saint's desk, which reaches back to the wall, stays painted on the wall. Their outlines need Segment Anything (a learned model, the one exception to classical CV here); without it the step is skipped.
 - Object detection needs the front face's outline to be mostly visible (not hidden behind something else). Its depth comes from the receding edges, so a box whose side matches the background in color can come out too shallow.
 - The photo has no data close to the camera along the side walls, so even a small sideways step reveals large holes there (see the left/right views).
 - The focal length is an assumption (26 mm equivalent) unless the floor shows diagonal tiles (distance points).
@@ -204,9 +214,10 @@ tests/          test_tip.py (geometry/rendering) · test_annotation_tools.py (de
 - [x] Solids on real photos: OpenCV GrabCut on room-background proposals, wired into `auto_annotate`
 - [x] Wall boxes (signs, alarm boxes, hanging signs) and ceiling pipes, automatic and classical
 - [x] Back wall on paintings (surface-split term), shown on Carpaccio's *St Augustine*
+- [x] Standing cutouts (people, chairs): geometry decides, SAM traces
 - [ ] Back walls that run out of frame (Vermeer's *Music Lesson*)
 - [ ] Cross pipes along X, door casings as frames, and splitting touching proposals
-- [ ] Solids: tilted axes, and SAM as a fallback tracer for shapes GrabCut can't separate
+- [ ] Solids: tilted axes, and the SAM tracer for shapes GrabCut can't separate
 - [ ] Diffusion inpainting on the rectified plane textures vs. on the original photo (the main experiment)
 - [ ] Photograph about 6 scenes, plus held-out nearby views for evaluation
 - [ ] Hole/seam/line-continuity comparison: unfilled vs. push-pull vs. diffusion

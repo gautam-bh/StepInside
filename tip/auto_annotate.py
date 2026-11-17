@@ -1233,7 +1233,35 @@ def add_wall_things(ann: Annotation, image: np.ndarray) -> Annotation:
     return ann
 
 
-def auto_annotate(image_path: str, image: np.ndarray | None = None, solids: bool = True, **kw) -> Annotation:
+def add_cutouts(ann: Annotation, image: np.ndarray) -> Annotation:
+    """Detect things standing on the floor that are neither boxes nor solids
+    (people, chairs) and store them as foreground billboards (tip.cutouts).
+    Needs Segment Anything and its checkpoint; a no-op without them."""
+    from .cutouts import find_cutouts, sam_available
+    from .geometry import build_scene
+
+    if not sam_available():
+        return ann
+    import cv2
+
+    H, W = image.shape[:2]
+    avoid = []
+    for sol in ann.solids:  # silhouettes of the solids already found
+        prof = np.asarray(sol.profile, float)
+        poly = np.concatenate([prof[:, [1, 0]], prof[::-1][:, [2, 0]]])
+        m = np.zeros((H, W), np.uint8)
+        cv2.fillPoly(m, [np.round(poly).astype(np.int32)], 1)
+        avoid.append(m.astype(bool))
+    keep = ann.solids, ann.reliefs, ann.tubes, ann.foreground
+    ann.solids, ann.reliefs, ann.tubes, ann.foreground = [], [], [], []
+    scene = build_scene(ann, W, H)
+    ann.solids, ann.reliefs, ann.tubes, ann.foreground = keep
+    ann.foreground = list(ann.foreground) + find_cutouts(image, scene, avoid=avoid)
+    return ann
+
+
+def auto_annotate(image_path: str, image: np.ndarray | None = None, solids: bool = True, cutouts: bool = True,
+                  **kw) -> Annotation:
     if image is None:
         from .textures import load_image
 
@@ -1255,4 +1283,6 @@ def auto_annotate(image_path: str, image: np.ndarray | None = None, solids: bool
             return ann
         add_solids(ann, image)
         add_wall_things(ann, image)
+    if cutouts:
+        add_cutouts(ann, image)
     return ann
