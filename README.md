@@ -40,6 +40,14 @@ On the hallway photo, the one room-aligned object is the gray trash bin 27 m dow
 
 ## Quick start
 
+**Gallery.** The easiest way to see everything: one local page with every example. For each one you can walk around inside it in 3D, drag a slider between the input and its annotation, click through the novel views (holes or simple fill), and read the figures. `←`/`→` switch examples, `1`–`4` switch views.
+
+```bash
+python scripts/serve.py                  # builds site/examples.json, serves the repo, opens http://localhost:8000/site/
+```
+
+Any scene in `scenes/` shows up automatically. Titles and descriptions for known examples live in `scripts/build_site.py`.
+
 ```bash
 pip install -r requirements.txt          # numpy, pillow, matplotlib, opencv-python-headless (GrabCut)
 
@@ -67,6 +75,7 @@ python tests/test_annotation_tools.py    # auto-annotation (VP, back wall, deepe
 python scripts/annotate.py data/images/my_room.jpg      # auto-detect, then adjust in the editor
 python scripts/show_annotation.py data/annotations/my_room.json -o outputs/my_room/annotation.png   # check it
 python scripts/build_scene.py data/annotations/my_room.json
+python scripts/render_views.py data/annotations/my_room.json    # novel views for the gallery
 ```
 
 `annotate.py` first **detects the vanishing point, back wall and deeper boxes automatically** ([`tip/auto_annotate.py`](tip/auto_annotate.py)), then opens an editor seeded with the result:

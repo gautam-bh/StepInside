@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StepInside Gallery</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0f0d0b;        /* the room at night */
+    --wall: #17140f;       /* panels */
+    --wall-2: #1f1b15;
+    --line: #2c261e;
+    --line-2: #3d3429;
+    --text: #efe7da;
+    --muted: #a89c8b;
+    --faint: #7d7264;
+    --brass: #e8b46a;
+    --brass-ink: #1a140c;
+    --hole: #ff00ff;       /* the renders' own hole colour */
+    --serif: "Cormorant Garamond", "Iowan Old Style", Georgia, serif;
+    --sans: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+    --ease: cubic-bezier(.16, 1, .3, 1);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--ink); color: var(--text);
+    font: 15px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+  ::selection { background: var(--brass); color: var(--brass-ink); }
+  * { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  :focus-visible { outline: 2px solid var(--brass); outline-offset: 3px; border-radius: 4px; }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+  a { color: var(--brass); text-underline-offset: 3px; }
+
+  .app { display: grid; grid-template-columns: 380px 1fr; height: 100vh; height: 100dvh; }
+
+  /* ---- placard column -------------------------------------------------- */
+  aside { border-right: 1px solid var(--line); background: var(--wall); display: flex;
+    flex-direction: column; min-height: 0; }
+  .brand { display: flex; align-items: baseline; gap: 10px; padding: 22px 28px 0; }
+  .brand b { font: 600 22px/1 var(--serif); letter-spacing: .01em; }
+  .brand span { color: var(--faint); font-size: 12.5px; }
+  .placard { padding: 28px 28px 26px; flex: 1; min-height: 0; overflow-y: auto; border-top: 1px solid var(--line); }
+  .placard h1 { font: italic 500 38px/1.05 var(--serif); margin: 0; letter-spacing: -.01em;
+    text-wrap: balance; }
+  .placard .medium { margin: 10px 0 0; color: var(--muted); font-size: 13.5px; }
+  .tags { display: flex; gap: 6px; margin: 16px 0 0; flex-wrap: wrap; }
+  .tag { font-size: 12px; padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--muted); }
+  .tag.auto { border-color: rgba(232,180,106,.45); color: var(--brass); }
+  .placard p.blurb { margin: 20px 0 0; color: #d9cfbf; max-width: 62ch; text-wrap: pretty; }
+  dl { display: grid; grid-template-columns: auto 1fr; gap: 7px 18px; margin: 24px 0 0; font-size: 13.5px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; }
+
+  nav.examples { padding: 18px 16px 16px; flex-shrink: 0; }
+  nav.examples ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+  .ex { display: grid; grid-template-columns: 64px 1fr; gap: 14px; align-items: center; width: 100%;
+    text-align: left; padding: 6px 12px 6px 6px; border-radius: 10px; transition: background .25s var(--ease); }
+  .ex:hover { background: var(--wall-2); }
+  .ex .frame { width: 64px; height: 46px; border-radius: 4px; overflow: hidden; background: #000;
+    box-shadow: 0 0 0 1px var(--line-2), 0 6px 14px -6px rgba(0,0,0,.7); transition: box-shadow .3s var(--ease); }
+  .ex .frame img { width: 100%; height: 100%; object-fit: cover; display: block; filter: saturate(.85) brightness(.85);
+    transition: filter .3s var(--ease); }
+  .ex:hover .frame img, .ex[aria-current="true"] .frame img { filter: none; }
+  .ex[aria-current="true"] { background: var(--wall-2); }
+  .ex[aria-current="true"] .frame { box-shadow: 0 0 0 1.5px var(--brass), 0 8px 18px -6px rgba(0,0,0,.8); }
+  .ex .t { font: italic 500 18px/1.15 var(--serif); display: block; }
+  .ex .k { color: var(--faint); font-size: 12px; display: block; margin-top: 2px; }
+  .keys { color: var(--faint); font-size: 12px; padding: 12px 28px 18px; border-top: 1px solid var(--line); }
+  kbd { font: 11px var(--mono); border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 4px;
+    padding: 0 5px; color: var(--muted); }
+
+  /* ---- stage ----------------------------------------------------------- */
+  main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .bar { display: flex; align-items: center; gap: 16px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
+  .tabs { display: flex; gap: 2px; background: var(--wall); border: 1px solid var(--line); border-radius: 999px; padding: 3px; }
+  .tabs button { padding: 6px 16px; border-radius: 999px; color: var(--muted); font-size: 14px;
+    transition: color .2s, background .3s var(--ease); white-space: nowrap; }
+  .tabs button:hover { color: var(--text); }
+  .tabs button[aria-selected="true"] { background: var(--brass); color: var(--brass-ink); font-weight: 500; }
+  .tabs button[hidden] { display: none; }
+  .pager { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .pager .count { font: 13px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; min-width: 4.5ch; text-align: center; }
+  .icon-btn { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center;
+    border: 1px solid var(--line-2); color: var(--muted); transition: color .2s, border-color .2s; }
+  .icon-btn:hover { color: var(--text); border-color: #5a4d3c; }
+  .icon-btn svg { width: 16px; height: 16px; }
+
+  .stage { position: relative; flex: 1; min-height: 0; }
+  .pane { position: absolute; inset: 0; display: none; }
+  .pane.on { display: flex; }
+  .pane.enter { animation: enter .55s var(--ease); }
+  @keyframes enter { from { opacity: .0; filter: blur(10px); transform: scale(.985); } }
+  @media (prefers-reduced-motion: reduce) { .pane.enter { animation: none; } }
+
+  #walk iframe { border: 0; width: 100%; height: 100%; background: var(--ink); }
+
+  .fitbox { flex: 1; min-height: 0; display: grid; place-items: center; padding: 24px; }
+  .plate { position: relative; box-shadow: 0 30px 60px -30px rgba(0,0,0,.9), 0 0 0 1px var(--line); background: #000; }
+  .plate img { display: block; width: 100%; height: 100%; }
+
+  /* annotation: drag to compare */
+  #compare .plate { cursor: ew-resize; touch-action: none; user-select: none; }
+  #compare .over { position: absolute; inset: 0; clip-path: inset(0 0 0 var(--cut, 50%)); }
+  #compare .handle { position: absolute; top: 0; bottom: 0; left: var(--cut, 50%); width: 0; }
+  #compare .handle::before { content: ""; position: absolute; top: 0; bottom: 0; left: -1px; width: 2px; background: var(--brass); }
+  #compare .knob { position: absolute; top: 50%; left: 0; width: 38px; height: 38px; transform: translate(-50%, -50%);
+    border-radius: 50%; background: var(--brass); color: var(--brass-ink); display: grid; place-items: center;
+    box-shadow: 0 6px 16px rgba(0,0,0,.5); }
+  #compare .knob svg { width: 18px; height: 18px; }
+  .cap { position: absolute; top: 12px; font-size: 12px; padding: 3px 10px; border-radius: 999px;
+    background: rgba(15,13,11,.78); color: var(--text); backdrop-filter: blur(6px); pointer-events: none; }
+  .cap.l { left: 12px; } .cap.r { right: 12px; }
+  .pane-col { flex-direction: column; }
+  .under { display: flex; align-items: center; justify-content: center; gap: 18px; flex-wrap: wrap;
+    padding: 0 20px 20px; color: var(--muted); font-size: 13px; }
+
+  /* novel views */
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+  .chip { padding: 5px 13px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--muted); font-size: 13px;
+    transition: color .2s, border-color .2s, background .2s; }
+  .chip:hover { color: var(--text); border-color: #5a4d3c; }
+  .chip[aria-pressed="true"] { color: var(--brass-ink); background: var(--brass); border-color: var(--brass); }
+  .seg { display: flex; border: 1px solid var(--line-2); border-radius: 999px; padding: 2px; }
+  .seg button { padding: 4px 12px; border-radius: 999px; color: var(--muted); font-size: 13px; display: flex; align-items: center; gap: 7px; }
+  .seg button[aria-pressed="true"] { background: var(--wall-2); color: var(--text); box-shadow: 0 0 0 1px var(--line-2); }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; background: var(--hole); display: inline-block; }
+  .swatch.fill { background: linear-gradient(135deg, #8a7a66, #c9b79c); }
+
+  /* figures */
+  #figures { overflow-y: auto; display: none; }
+  #figures.on { display: block; }
+  .figs { max-width: 1180px; margin: 0 auto; padding: 32px 28px 60px; display: grid; gap: 44px; }
+  figure { margin: 0; }
+  figure img { width: 100%; display: block; border-radius: 3px; box-shadow: 0 0 0 1px var(--line), 0 24px 50px -28px rgba(0,0,0,.9); cursor: zoom-in; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 12px; max-width: 72ch; text-wrap: pretty; }
+
+  dialog.zoom { border: 0; padding: 0; background: transparent; max-width: 96vw; max-height: 94vh; }
+  dialog.zoom::backdrop { background: rgba(8,7,6,.92); backdrop-filter: blur(4px); }
+  dialog.zoom img { max-width: 96vw; max-height: 94vh; display: block; cursor: zoom-out; }
+
+  .error { margin: auto; max-width: 52ch; text-align: center; color: var(--muted); padding: 40px; }
+  .error code { font-family: var(--mono); color: var(--text); font-size: 13px; }
+
+  @media (max-width: 960px) {
+    .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; height: auto; min-height: 100dvh; }
+    .app > *, aside > * { min-width: 0; }
+    aside { border-right: 0; border-bottom: 1px solid var(--line); display: contents; }
+    .brand { padding: 16px; background: var(--wall); }
+    .placard { padding: 18px 16px 28px; background: var(--wall); order: 3; overflow: visible; }
+    .placard h1 { font-size: 32px; }
+    nav.examples { order: 1; padding: 8px 16px 12px; overflow-x: auto; background: var(--wall); border-bottom: 1px solid var(--line); }
+    nav.examples ul { grid-auto-flow: column; grid-auto-columns: minmax(220px, 1fr); }
+    .keys { display: none; }
+    main { order: 2; height: 78vh; height: 78dvh; }
+    .bar { padding: 10px 16px; overflow-x: auto; }
+    .fitbox { padding: 12px 16px; }
+    .under { padding: 0 16px 14px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="brand"><b>StepInside</b><span>Tour Into the Picture · CS180</span></div>
+    <nav class="examples" aria-label="Examples"><ul id="list"></ul></nav>
+    <section class="placard" aria-live="polite">
+      <h1 id="title">&nbsp;</h1>
+      <p class="medium" id="medium"></p>
+      <div class="tags" id="tags"></div>
+      <p class="blurb" id="blurb"></p>
+      <dl id="stats"></dl>
+    </section>
+    <div class="keys"><kbd>←</kbd> <kbd>→</kbd> examples &nbsp;·&nbsp; <kbd>1</kbd>–<kbd>4</kbd> views</div>
+  </aside>
+
+  <main>
+    <div class="bar">
+      <div class="tabs" role="tablist" aria-label="View">
+        <button role="tab" data-tab="walk">Walk in</button>
+        <button role="tab" data-tab="compare">Annotation</button>
+        <button role="tab" data-tab="views">Novel views</button>
+        <button role="tab" data-tab="figures">Figures</button>
+      </div>
+      <div class="pager">
+        <button class="icon-btn" id="prev" aria-label="Previous example">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3 5 8l5 5"/></svg>
+        </button>
+        <span class="count" id="count"></span>
+        <button class="icon-btn" id="next" aria-label="Next example">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="m6 3 5 5-5 5"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="stage" id="stage">
+      <section class="pane" id="walk" role="tabpanel"><iframe title="3D walkthrough" allow="fullscreen"></iframe></section>
+
+      <section class="pane pane-col" id="compare" role="tabpanel">
+        <div class="fitbox">
+          <div class="plate" id="cmp">
+            <img id="cmp-a" alt="Input image">
+            <div class="over"><img id="cmp-b" alt="Annotation: back wall, room edges and detected objects"></div>
+            <span class="cap l">Input</span><span class="cap r">Annotation</span>
+            <div class="handle"><div class="knob"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4 2 8l4 4M10 4l4 4-4 4"/></svg></div></div>
+          </div>
+        </div>
+        <div class="under">Drag across the image to compare the input with what the system found.</div>
+      </section>
+
+      <section class="pane pane-col" id="views" role="tabpanel">
+        <div class="fitbox"><div class="plate" id="nv"><img id="nv-img" alt=""></div></div>
+        <div class="under">
+          <div class="chips" id="nv-chips"></div>
+          <div class="seg" id="nv-mode">
+            <button data-mode="holes" aria-pressed="true"><i class="swatch"></i>Holes</button>
+            <button data-mode="filled" aria-pressed="false"><i class="swatch fill"></i>Simple fill</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="pane" id="figures" role="tabpanel"><div class="figs" id="figs"></div></section>
+    </div>
+  </main>
+</div>
+<dialog class="zoom" id="zoom"><img alt=""></dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const TABS = ["walk", "compare", "views", "figures"];
+let examples = [], cur = 0, tab = "walk", view = 0, mode = "holes";
+
+function available(ex) {
+  return { walk: true, compare: !!ex.annotation, views: ex.views.length > 0 || !!ex.sweep, figures: ex.figures.length > 0 };
+}
+
+function route() {
+  const [id, t] = location.hash.slice(1).split("/");
+  const i = examples.findIndex((e) => e.id === id);
+  show(i >= 0 ? i : 0, TABS.includes(t) ? t : tab, false);
+}
+
+function show(i, t, push = true) {
+  const changed = i !== cur || !$("title").dataset.ready;
+  cur = (i + examples.length) % examples.length;
+  const ex = examples[cur], av = available(ex);
+  if (!av[t]) t = "walk";
+  if (push) history.replaceState(null, "", `#${ex.id}/${t}`);
+
+  if (changed) {
+    $("title").textContent = ex.title; $("title").dataset.ready = 1;
+    $("medium").textContent = ex.medium;
+    $("tags").innerHTML = "";
+    for (const [txt, cls] of [[ex.kind, ""], [ex.annotated ? `${ex.annotated} annotation` : "", ex.annotated === "Automatic" ? "auto" : ""]]) {
+      if (!txt) continue;
+      const s = document.createElement("span"); s.className = "tag " + cls; s.textContent = txt; $("tags").append(s);
+    }
+    $("blurb").textContent = ex.blurb;
+    $("stats").innerHTML = "";
+    for (const [k, v] of ex.stats) { const dt = document.createElement("dt"), dd = document.createElement("dd"); dt.textContent = k; dd.textContent = v; $("stats").append(dt, dd); }
+    document.querySelectorAll(".ex").forEach((b, j) => b.setAttribute("aria-current", j === cur));
+    document.querySelector(`.ex[aria-current="true"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    $("count").textContent = `${cur + 1} / ${examples.length}`;
+    document.title = `${ex.title} · StepInside`;
+    loadExample(ex);
+  }
+  document.querySelectorAll(".tabs button").forEach((b) => {
+    b.hidden = !av[b.dataset.tab];
+    b.setAttribute("aria-selected", b.dataset.tab === t);
+    b.tabIndex = b.dataset.tab === t ? 0 : -1;
+  });
+  if (changed || t !== tab) {
+    for (const p of TABS) {
+      const el = $(p); el.classList.toggle("on", p === t);
+      if (p === t) { el.classList.remove("enter"); void el.offsetWidth; el.classList.add("enter"); }
+    }
+  }
+  tab = t;
+  if (t === "walk") {
+    const f = $("walk").querySelector("iframe"), src = `../viewer/?scene=${encodeURIComponent(ex.id)}&embed=1`;
+    if (f.dataset.src !== src) { f.dataset.src = src; f.src = src; }
+  }
+  fit();
+}
+
+function loadExample(ex) {
+  // annotation compare
+  if (ex.annotation) { $("cmp-a").src = ex.input; $("cmp-b").src = ex.annotation; setCut(0.5); }
+  // novel views
+  view = 0;
+  const chips = $("nv-chips"); chips.innerHTML = "";
+  const opts = ex.views.map((v) => v.label).concat(ex.sweep ? ["Camera sweep"] : []);
+  opts.forEach((label, j) => {
+    const b = document.createElement("button"); b.className = "chip"; b.textContent = label;
+    b.onclick = () => { view = j; renderView(); }; chips.append(b);
+  });
+  renderView();
+  // figures
+  const figs = $("figs"); figs.innerHTML = "";
+  for (const f of ex.figures) {
+    const fig = document.createElement("figure"), img = document.createElement("img"), cap = document.createElement("figcaption");
+    img.src = f.src; img.alt = f.caption; img.loading = "lazy"; img.onclick = () => zoom(f.src, f.caption);
+    cap.textContent = f.caption; fig.append(img, cap); figs.append(fig);
+  }
+}
+
+function renderView() {
+  const ex = examples[cur];
+  const sweep = view >= ex.views.length;
+  $("nv-chips").querySelectorAll(".chip").forEach((c, j) => c.setAttribute("aria-pressed", j === view));
+  $("nv-mode").style.visibility = sweep ? "hidden" : "visible";
+  $("nv-mode").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.mode === mode));
+  const img = $("nv-img");
+  if (sweep) { img.src = ex.sweep; img.alt = "Camera sweep through the scene with the simple fill"; }
+  else { const v = ex.views[view]; img.src = v[mode]; img.alt = `${v.label}, ${mode === "holes" ? "holes in magenta" : "simple fill"}`; }
+}
+$("nv-mode").querySelectorAll("button").forEach((b) => b.onclick = () => { mode = b.dataset.mode; renderView(); });
+
+// Fit a plate of the example's aspect inside its box.
+function fit() {
+  const ex = examples[cur]; if (!ex) return;
+  for (const id of ["cmp", "nv"]) {
+    const plate = $(id), box = plate.parentElement;
+    const cs = getComputedStyle(box);
+    const aw = box.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    const ah = box.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+    if (aw <= 0 || ah <= 0) continue;
+    const s = Math.min(aw / ex.width, ah / ex.height);
+    plate.style.width = Math.floor(ex.width * s) + "px"; plate.style.height = Math.floor(ex.height * s) + "px";
+  }
+}
+new ResizeObserver(fit).observe($("stage"));
+
+// compare slider
+function setCut(f) { $("cmp").style.setProperty("--cut", (Math.min(1, Math.max(0, f)) * 100).toFixed(2) + "%"); }
+{
+  const plate = $("cmp"); let down = false;
+  const at = (e) => { const r = plate.getBoundingClientRect(); setCut((e.clientX - r.left) / r.width); };
+  plate.addEventListener("pointerdown", (e) => { down = true; plate.setPointerCapture(e.pointerId); at(e); });
+  plate.addEventListener("pointermove", (e) => down && at(e));
+  plate.addEventListener("pointerup", () => (down = false));
+  plate.addEventListener("pointercancel", () => (down = false));
+}
+
+function zoom(src, alt) { const d = $("zoom"), i = d.querySelector("img"); i.src = src; i.alt = alt; d.showModal(); }
+$("zoom").onclick = () => $("zoom").close();
+
+// controls
+document.querySelectorAll(".tabs button").forEach((b) => b.onclick = () => show(cur, b.dataset.tab));
+$("prev").onclick = () => show(cur - 1, tab);
+$("next").onclick = () => show(cur + 1, tab);
+addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey || $("zoom").open) return;
+  if (e.key === "ArrowRight") show(cur + 1, tab);
+  else if (e.key === "ArrowLeft") show(cur - 1, tab);
+  else if (/^[1-4]$/.test(e.key)) {
+    const t = [...document.querySelectorAll(".tabs button")].filter((b) => !b.hidden)[+e.key - 1];
+    if (t) show(cur, t.dataset.tab);
+  }
+});
+addEventListener("hashchange", route);
+
+fetch("examples.json").then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); }).then((data) => {
+  examples = data;
+  const list = $("list");
+  data.forEach((ex, j) => {
+    const li = document.createElement("li"), b = document.createElement("button");
+    b.className = "ex";
+    b.innerHTML = `<span class="frame"><img alt="" src="${ex.thumb}"></span><span><span class="t"></span><span class="k"></span></span>`;
+    b.querySelector(".t").textContent = ex.title;
+    b.querySelector(".k").textContent = [ex.kind, ex.annotated].filter(Boolean).join(" · ");
+    b.onclick = () => show(j, tab);
+    li.append(b); list.append(li);
+  });
+  cur = -1; route();
+}).catch((e) => {
+  $("stage").innerHTML = `<div class="error">Couldn't load <code>site/examples.json</code> (${e.message}).<br><br>
+    Start the gallery with <code>python scripts/serve.py</code>, which builds it and serves the repo.</div>`;
+});
+</script>
+</body>
+</html>

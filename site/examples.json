@@ -1,0 +1,307 @@
+[
+ {
+  "id": "st_augustine",
+  "title": "Saint Augustine in His Study",
+  "medium": "Vittore Carpaccio, c. 1502 \u00b7 tempera on canvas",
+  "kind": "Painting",
+  "annotated": "Automatic",
+  "blurb": "A Renaissance painting turned into a room you can step into, with no hand input. The vanishing point lands on the saint's desk. The back wall is the far wall around the altar niche, found by checking that each room surface keeps one colour along rays from the vanishing point. The dog, the books and the seal on the floor stand up as small solids.",
+  "width": 1200,
+  "height": 793,
+  "input": "../scenes/st_augustine/input.jpg",
+  "thumb": "thumbs/st_augustine.jpg",
+  "annotation": "../outputs/st_augustine/auto_annotation.jpg",
+  "views": [
+   {
+    "label": "Original camera",
+    "holes": "../outputs/st_augustine/original_holes.jpg",
+    "filled": "../outputs/st_augustine/original_filled.jpg"
+   },
+   {
+    "label": "0.3 m left",
+    "holes": "../outputs/st_augustine/left_0.3m_holes.jpg",
+    "filled": "../outputs/st_augustine/left_0.3m_filled.jpg"
+   },
+   {
+    "label": "0.3 m right",
+    "holes": "../outputs/st_augustine/right_0.3m_holes.jpg",
+    "filled": "../outputs/st_augustine/right_0.3m_filled.jpg"
+   },
+   {
+    "label": "0.3 m up",
+    "holes": "../outputs/st_augustine/up_0.3m_holes.jpg",
+    "filled": "../outputs/st_augustine/up_0.3m_filled.jpg"
+   },
+   {
+    "label": "1.5 m forward",
+    "holes": "../outputs/st_augustine/forward_1.5m_holes.jpg",
+    "filled": "../outputs/st_augustine/forward_1.5m_filled.jpg"
+   }
+  ],
+  "sweep": "../outputs/st_augustine/sweep.gif",
+  "figures": [],
+  "stats": [
+   [
+    "Room boxes",
+    "1"
+   ],
+   [
+    "Round solids",
+    "4"
+   ],
+   [
+    "Pipes",
+    "1"
+   ],
+   [
+    "Depth",
+    "12.0 m"
+   ],
+   [
+    "Width \u00d7 height",
+    "9.7 \u00d7 6.0 m"
+   ],
+   [
+    "Lens",
+    "26 mm equiv."
+   ]
+  ]
+ },
+ {
+  "id": "hallway_auto",
+  "title": "Hallway",
+  "medium": "iPhone photograph",
+  "kind": "Photograph",
+  "annotated": "Automatic",
+  "blurb": "The whole pipeline, untouched by hand. Vanishing point, back wall, the doorway and three corridor stretches behind it, both fire extinguishers as 3D solids, the sign and strobe as boxes on the wall, and six pipes hanging under the ceiling.",
+  "width": 1200,
+  "height": 1600,
+  "input": "../scenes/hallway_auto/input.jpg",
+  "thumb": "thumbs/hallway_auto.jpg",
+  "annotation": "../outputs/hallway/auto_annotation.jpg",
+  "views": [
+   {
+    "label": "Original camera",
+    "holes": "../outputs/hallway_auto/original_holes.jpg",
+    "filled": "../outputs/hallway_auto/original_filled.jpg"
+   },
+   {
+    "label": "0.3 m left",
+    "holes": "../outputs/hallway_auto/left_0.3m_holes.jpg",
+    "filled": "../outputs/hallway_auto/left_0.3m_filled.jpg"
+   },
+   {
+    "label": "0.3 m right",
+    "holes": "../outputs/hallway_auto/right_0.3m_holes.jpg",
+    "filled": "../outputs/hallway_auto/right_0.3m_filled.jpg"
+   },
+   {
+    "label": "0.3 m up",
+    "holes": "../outputs/hallway_auto/up_0.3m_holes.jpg",
+    "filled": "../outputs/hallway_auto/up_0.3m_filled.jpg"
+   },
+   {
+    "label": "1.5 m forward",
+    "holes": "../outputs/hallway_auto/forward_1.5m_holes.jpg",
+    "filled": "../outputs/hallway_auto/forward_1.5m_filled.jpg"
+   },
+   {
+    "label": "9 m forward",
+    "holes": "../outputs/hallway_auto/through_door_9m_holes.jpg",
+    "filled": "../outputs/hallway_auto/through_door_9m_filled.jpg"
+   }
+  ],
+  "sweep": "../outputs/hallway_auto/sweep.gif",
+  "figures": [
+   {
+    "src": "../outputs/hallway/solids_auto.jpg",
+    "caption": "Round objects: the empty-room background, what differs from it, the traced silhouettes, and a moved camera where both extinguishers stand off the wall."
+   },
+   {
+    "src": "../outputs/hallway/wall_things_auto.jpg",
+    "caption": "Wall boxes and ceiling pipes: the sign and strobe become thin boxes, six pipes become cylinders."
+   }
+  ],
+  "stats": [
+   [
+    "Room boxes",
+    "4"
+   ],
+   [
+    "Round solids",
+    "2"
+   ],
+   [
+    "Wall boxes",
+    "2"
+   ],
+   [
+    "Pipes",
+    "6"
+   ],
+   [
+    "Depth",
+    "42.3 m"
+   ],
+   [
+    "Width \u00d7 height",
+    "2.6 \u00d7 2.7 m"
+   ],
+   [
+    "Lens",
+    "26 mm equiv."
+   ]
+  ]
+ },
+ {
+  "id": "hallway",
+  "title": "Hallway, by hand",
+  "medium": "iPhone photograph",
+  "kind": "Photograph",
+  "annotated": "By hand",
+  "blurb": "The reference annotation, made in the editor: seven boxes from the camera through the doorway to the corridor's end wall, about 49 m away. The extinguishers are flat cutouts here, which is how classic Tour Into the Picture handles foreground.",
+  "width": 1200,
+  "height": 1600,
+  "input": "../scenes/hallway/input.jpg",
+  "thumb": "thumbs/hallway.jpg",
+  "annotation": "../outputs/hallway/annotation.jpg",
+  "views": [
+   {
+    "label": "Original camera",
+    "holes": "../outputs/hallway/original_holes.jpg",
+    "filled": "../outputs/hallway/original_filled.jpg"
+   },
+   {
+    "label": "0.3 m left",
+    "holes": "../outputs/hallway/left_0.3m_holes.jpg",
+    "filled": "../outputs/hallway/left_0.3m_filled.jpg"
+   },
+   {
+    "label": "0.3 m right",
+    "holes": "../outputs/hallway/right_0.3m_holes.jpg",
+    "filled": "../outputs/hallway/right_0.3m_filled.jpg"
+   },
+   {
+    "label": "0.3 m up",
+    "holes": "../outputs/hallway/up_0.3m_holes.jpg",
+    "filled": "../outputs/hallway/up_0.3m_filled.jpg"
+   },
+   {
+    "label": "1.5 m forward",
+    "holes": "../outputs/hallway/forward_1.5m_holes.jpg",
+    "filled": "../outputs/hallway/forward_1.5m_filled.jpg"
+   },
+   {
+    "label": "9 m forward",
+    "holes": "../outputs/hallway/through_door_9m_holes.jpg",
+    "filled": "../outputs/hallway/through_door_9m_filled.jpg"
+   }
+  ],
+  "sweep": "../outputs/hallway/sweep.gif",
+  "figures": [
+   {
+    "src": "../outputs/hallway/faces_unfolded.jpg",
+    "caption": "Every face of the room, perspective-corrected and unfolded at true scale. Holes (no photo data) in magenta."
+   },
+   {
+    "src": "../outputs/hallway/trash_bin_object.jpg",
+    "caption": "The trash bin 27 m down the corridor, added in the editor, standing out from the wall as a box."
+   }
+  ],
+  "stats": [
+   [
+    "Room boxes",
+    "7"
+   ],
+   [
+    "Furniture boxes",
+    "1"
+   ],
+   [
+    "Cutouts",
+    "1"
+   ],
+   [
+    "Depth",
+    "48.7 m"
+   ],
+   [
+    "Width \u00d7 height",
+    "2.6 \u00d7 2.8 m"
+   ],
+   [
+    "Lens",
+    "26 mm equiv."
+   ]
+  ]
+ },
+ {
+  "id": "furnished_room",
+  "title": "Furnished room",
+  "medium": "Synthetic test room, known geometry",
+  "kind": "Synthetic",
+  "annotated": "Automatic",
+  "blurb": "A rendered room whose true geometry is known, used to test the detectors. Both pieces of furniture are found as 3D boxes; moving the camera shows their sides and the floor they hid.",
+  "width": 600,
+  "height": 800,
+  "input": "../scenes/furnished_room/input.jpg",
+  "thumb": "thumbs/furnished_room.jpg",
+  "annotation": "../outputs/furnished_room/annotation.jpg",
+  "views": [
+   {
+    "label": "Original camera",
+    "holes": "../outputs/furnished_room/original_holes.jpg",
+    "filled": "../outputs/furnished_room/original_filled.jpg"
+   },
+   {
+    "label": "0.3 m left",
+    "holes": "../outputs/furnished_room/left_0.3m_holes.jpg",
+    "filled": "../outputs/furnished_room/left_0.3m_filled.jpg"
+   },
+   {
+    "label": "0.3 m right",
+    "holes": "../outputs/furnished_room/right_0.3m_holes.jpg",
+    "filled": "../outputs/furnished_room/right_0.3m_filled.jpg"
+   },
+   {
+    "label": "0.3 m up",
+    "holes": "../outputs/furnished_room/up_0.3m_holes.jpg",
+    "filled": "../outputs/furnished_room/up_0.3m_filled.jpg"
+   },
+   {
+    "label": "1.5 m forward",
+    "holes": "../outputs/furnished_room/forward_1.5m_holes.jpg",
+    "filled": "../outputs/furnished_room/forward_1.5m_filled.jpg"
+   }
+  ],
+  "sweep": "../outputs/furnished_room/sweep.gif",
+  "figures": [
+   {
+    "src": "../outputs/furnished_room/objects_demo.jpg",
+    "caption": "Furniture square to the room becomes solid boxes; the poster and the door correctly do not."
+   }
+  ],
+  "stats": [
+   [
+    "Room boxes",
+    "1"
+   ],
+   [
+    "Furniture boxes",
+    "2"
+   ],
+   [
+    "Depth",
+    "6.6 m"
+   ],
+   [
+    "Width \u00d7 height",
+    "2.6 \u00d7 3.0 m"
+   ],
+   [
+    "Lens",
+    "26 mm equiv."
+   ]
+  ]
+ }
+]

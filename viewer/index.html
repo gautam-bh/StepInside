@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>StepInside Viewer</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400&family=IBM+Plex+Sans:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root { --bg: #111; --fg: #eee; --muted: #999; --accent: #4fc3f7; --panel: rgba(20,20,20,0.85); }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
@@ -23,6 +24,27 @@
   #err { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
     padding: 24px; text-align: center; }
   #toggle { position: absolute; top: 12px; left: 12px; display: none; }
+
+  /* Embedded in the gallery (site/): a slim toolbar along the bottom edge. */
+  body.embed { --bg: #0f0d0b; --fg: #efe7da; --muted: #a89c8b; --accent: #e8b46a;
+    font-family: "IBM Plex Sans", -apple-system, sans-serif; }
+  body.embed #stage { bottom: 52px; }
+  body.embed #panel { top: auto; bottom: 0; left: 0; right: 0; max-width: none; border-radius: 0;
+    background: #17140f; border-top: 1px solid #2c261e; padding: 0 14px; height: 52px;
+    display: flex; align-items: center; gap: 18px; }
+  body.embed #panel h1, body.embed #b-hide, body.embed .help-long { display: none; }
+  body.embed #panel .row { margin: 0; flex-wrap: nowrap; }
+  body.embed button { background: transparent; border: 1px solid #3a3228; border-radius: 999px;
+    padding: 5px 12px; color: var(--muted); transition: color .2s, border-color .2s, background .2s; }
+  body.embed button:hover { color: var(--fg); border-color: #5a4d3c; }
+  body.embed button.on { color: #1a140c; background: var(--accent); border-color: var(--accent); }
+  body.embed button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  body.embed #pos { margin-left: auto; font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  body.embed .help-short { display: block !important; color: var(--muted); font-size: 12px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .help-short { display: none; }
+  @media (max-width: 720px) { body.embed .help-short, body.embed #pos { display: none !important; } }
 </style>
 <script type="importmap">
 { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
@@ -42,11 +64,12 @@
     <button id="b-reset" title="R">Reset</button>
     <button id="b-hide">Hide panel</button>
   </div>
+  <span class="help-short">Drag to move · scroll to walk · Shift+drag to look</span>
   <div id="pos"></div>
-  <p class="help">
+  <p class="help help-long">
     Drag to move sideways and up/down · scroll or W/S to walk forward and back ·
     A/D strafe · Q/E up/down · hold Shift to run · Shift+drag to look around.
-    Walk through the doorway to go down the corridor.<br>
+    <span id="door-hint">Walk through the doorway to go down the corridor.</span><br>
     Holes (no photo data) show in magenta.
   </p>
 </div>
@@ -58,6 +81,7 @@ import * as THREE from "three";
 
 const params = new URLSearchParams(location.search);
 const sceneName = params.get("scene") || "hallway";
+if (params.has("embed")) document.body.classList.add("embed");
 const base = `../scenes/${sceneName}/`;
 document.getElementById("scene-name").textContent = sceneName;
 
@@ -172,6 +196,7 @@ await Promise.all(meta.planes.map(async (p) => {
 // The scene is a chain of boxes along -z. Keep the camera inside whichever
 // box it is in (step back up to 1 m in front of the first one).
 const boxes = meta.boxes;
+if (boxes.length < 2) document.getElementById("door-hint").remove();
 const last = boxes[boxes.length - 1];
 const zLimits = [last.z[1] + 0.5, 1.0];
 const boxAt = (z) => boxes.find((b) => z <= b.z[0] && z >= b.z[1]) || boxes[0];
@@ -282,7 +307,8 @@ function stepKeys(dt) {
 
 // ---- layout & loop ------------------------------------------------------------
 function resize() {
-  const s = Math.min(innerWidth / W, innerHeight / H);
+  const st = document.getElementById("stage");
+  const s = Math.min(st.clientWidth / W, st.clientHeight / H);
   renderer.setSize(Math.floor(W * s), Math.floor(H * s));
 }
 addEventListener("resize", resize);
