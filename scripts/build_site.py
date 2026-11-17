@@ -29,7 +29,7 @@ EXAMPLES = {
             "A Renaissance painting turned into a room you can step into, with no hand input. "
             "The vanishing point lands on the saint's desk. The back wall is the far wall around the "
             "altar niche, found by checking that each room surface keeps one colour along rays from "
-            "the vanishing point. The saint, his chair and the lectern stand up as cutouts on the floor, "
+            "the vanishing point. The saint, his chair, the lectern and the dog stand up as cutouts on the floor, "
             "so moving the camera shows him in front of the cabinet and back wall, not painted on them."
         ),
     ),

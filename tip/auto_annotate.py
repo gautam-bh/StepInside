@@ -1256,7 +1256,10 @@ def add_cutouts(ann: Annotation, image: np.ndarray) -> Annotation:
     ann.solids, ann.reliefs, ann.tubes, ann.foreground = [], [], [], []
     scene = build_scene(ann, W, H)
     ann.solids, ann.reliefs, ann.tubes, ann.foreground = keep
-    ann.foreground = list(ann.foreground) + find_cutouts(image, scene, avoid=avoid)
+    cutouts, replaced = find_cutouts(image, scene, solids=avoid)
+    ann.foreground = list(ann.foreground) + cutouts
+    if replaced:  # solids that only covered part of a cutout's object
+        ann.solids = [sol for i, sol in enumerate(ann.solids) if i not in replaced]
     return ann
 
 

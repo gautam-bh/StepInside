@@ -85,13 +85,47 @@ def _polygons(mask: np.ndarray, eps: float = 1.0, min_frac: float = 0.05):
     return out
 
 
+def _bridge(mask: np.ndarray, gap: int) -> np.ndarray:
+    """Join separate pieces of one object split by something in front of it.
+    In each column where one piece lies directly above another, fill the
+    gap between them if it is at most gap px. Unlike a closing, this leaves
+    the outline's own dips (around a head, between arms) alone."""
+    import cv2
+
+    n, lab = cv2.connectedComponents(mask.astype(np.uint8), connectivity=8)
+    if n <= 2:
+        return mask
+    out = mask.copy()
+    H, W = mask.shape
+    for x in np.nonzero(mask.any(axis=0))[0]:
+        col = lab[:, x]
+        ys = np.nonzero(col)[0]
+        # Runs of one label down the column; fill between runs of different pieces.
+        breaks = np.nonzero(np.diff(ys) > 1)[0]
+        starts = np.r_[ys[0], ys[breaks + 1]]
+        ends = np.r_[ys[breaks], ys[-1]]
+        for e, s0 in zip(ends[:-1], starts[1:]):
+            if s0 - e - 1 <= gap and col[e] != col[s0]:
+                out[e + 1:s0, x] = True
+    return out
+
+
 def find_cutouts(image: np.ndarray, scene, checkpoint=None, min_area: float = 0.003, max_area: float = 0.4,
                  min_above: float = 0.25, height_range=(0.4, 3.5), max_recede: float = 1.12,
-                 avoid=(), debug: list | None = None) -> list[Foreground]:
+                 solids=(), min_stand_ratio: float = 2.5, bridge: float = 0.12,
+                 debug: list | None = None) -> tuple[list[Foreground], list[int]]:
     """Standing foreground objects as billboards (see the module docstring).
 
-    avoid: image-space boolean masks of things already modelled (solids,
-    wall boxes); a cutout mostly inside one is skipped."""
+    solids: image-space silhouettes (boolean masks) of the solids already
+    found. A mask mostly inside one is explained by it and skipped. But a
+    solid that covers only part of an object (a dog's body without its
+    head: a lathe can't hold a dog) is replaced by the cutout.
+
+    An object whose pixels all lie on the floor can still be standing (a
+    dog): if laid flat it would be a strip more than min_stand_ratio times
+    longer in depth than it is wide, which a rug or a book is not.
+
+    Returns (cutouts, indices of the solids they replace)."""
     from segment_anything import SamAutomaticMaskGenerator, SamPredictor
 
     H, W = image.shape[:2]
@@ -102,6 +136,7 @@ def find_cutouts(image: np.ndarray, scene, checkpoint=None, min_area: float = 0.
     col = isfloor[:, int(np.clip(scene.principal[0], 0, W - 1))]
     back_bottom = float(np.argmax(col)) if col.any() else vy
     cam_h = float(-scene.yf)
+    f = float(scene.focal)
     import cv2
 
     # Distance (px) to the nearest floor/wall seam.
@@ -147,6 +182,14 @@ def find_cutouts(image: np.ndarray, scene, checkpoint=None, min_area: float = 0.
         cols = np.nonzero(low >= 0)[0]
         return float(np.mean(seam_dist[low[cols], cols] <= seam_tol))
 
+    def stands_up(xs, yb, ytop):
+        """Laid flat on the floor, would it be an implausibly long strip?"""
+        if ytop <= vy + 1:
+            return True  # reaches the horizon: it can't be flat on the floor
+        z_near, z_far = f * cam_h / (yb - vy), f * cam_h / (ytop - vy)
+        width = (xs.max() - xs.min() + 1) * z_near / f
+        return (z_far - z_near) > min_stand_ratio * width
+
     def check(m):
         a = m.mean()
         ys, xs = np.nonzero(m)
@@ -161,7 +204,7 @@ def find_cutouts(image: np.ndarray, scene, checkpoint=None, min_area: float = 0.
             why = "bottom not on the floor in front of the back wall"
         elif yb >= H - 3:
             why = "cut off by the image bottom"
-        elif above < min_above:
+        elif above < min_above and not stands_up(xs, yb, ytop):
             why = f"flat on the floor ({above:.0%} above it)"
         elif not height_range[0] <= hm <= height_range[1]:
             why = f"height {hm:.1f} m"
@@ -171,8 +214,8 @@ def find_cutouts(image: np.ndarray, scene, checkpoint=None, min_area: float = 0.
             why = "bottom runs along a floor/wall seam (part of a wall)"
         elif on_room_seams(m) > 0.35:
             why = "outline follows the room's seams (a piece of a room surface)"
-        elif any((m & av).sum() > 0.3 * min(m.sum(), av.sum()) for av in avoid):
-            why = "already modelled"
+        elif any((m & sv).sum() > 0.8 * m.sum() for sv in solids):
+            why = "a solid explains it"
         return why, a, yb, ytop, (xs.min(), ytop, xs.max(), yb)
 
     cands = []
@@ -189,7 +232,7 @@ def find_cutouts(image: np.ndarray, scene, checkpoint=None, min_area: float = 0.
             continue
         keep.append(c)
     if not keep:
-        return []
+        return [], []
 
     # Grow each kept part to its whole object.
     pred = SamPredictor(sam)
@@ -215,10 +258,36 @@ def find_cutouts(image: np.ndarray, scene, checkpoint=None, min_area: float = 0.
             stab = (lg > 1).sum() / max((lg > -1).sum(), 1)
             if (mm & m).sum() >= 0.85 * m.sum() and stab > best and check(mm | m)[0] is None:
                 full, best = mm | m, stab
+        # Whatever crosses the object in front of it (a desk board across a
+        # figure's waist) splits the mask; it is in front anyway, so bridge
+        # short vertical gaps and keep the figure in one piece.
+        # Other objects SAM found on its own (the cabinet behind a figure)
+        # extend well beyond the figure: remove their pixels from it.
+        for rec in masks:
+            o = rec["segmentation"]
+            n_o = o.sum()
+            if (o & m).sum() < 0.05 * n_o and (o & full).sum() < 0.5 * n_o:
+                full &= ~o
+        # Drop slivers (a cabinet's finial).
+        r = max(1, int(0.003 * W))
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+        full = cv2.morphologyEx(full.astype(np.uint8), cv2.MORPH_OPEN, k) > 0
+        ys = np.nonzero(full)[0]
+        if len(ys) == 0:
+            continue
+        full = _bridge(full, max(3, int(bridge * (ys.max() - ys.min()))))
+        # Keep the pieces joined to the part that was found.
+        n, lab = cv2.connectedComponents(full.astype(np.uint8), connectivity=8)
+        joined = np.unique(lab[full & m])
+        full = np.isin(lab, joined[joined > 0])
+        if not full.any():
+            continue
         ys = np.nonzero(full)[0]
         contact = float(ys.max())
         c["full"] = full
         # All pieces stand at the object's floor contact.
         for j, poly in enumerate(_polygons(full)):
             out.append(Foreground(f"cutout{i + 1}" + ("" if j == 0 else chr(ord("a") + j - 1)), poly, contact))
-    return out
+    replaced = sorted({j for c in keep if "full" in c for j, sv in enumerate(solids)
+                       if (c["full"] & sv).sum() > 0.5 * sv.sum()})
+    return out, replaced
