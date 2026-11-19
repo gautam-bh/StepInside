@@ -139,6 +139,82 @@ Good photos have one-point perspective (looking straight down the room), visible
 
 ## How it works
 
+```mermaid
+flowchart TD
+    IMG[/"Input photo or painting"/]
+
+    subgraph ROOM["Room geometry · tip/auto_annotate.py"]
+        direction TB
+        VP["Vanishing-point candidates<br/>edge vote · LSD line segments ·<br/>floor distance points (also measure f)"]
+        BW["Back wall<br/>exhaustive rectangle search:<br/>edge score + surface-split term"]
+        D["Back-wall depth D<br/>floor sits 1.6 m below the camera"]
+        DEEP{"Opening in<br/>the back wall?"}
+        DOOR["Doorway → door-frame box<br/>+ corridor boxes (dynamic program)"]
+        ONE["Single room box"]
+        VP -->|"each candidate, refined jointly"| BW
+        BW -->|"best fit wins"| D --> DEEP
+        DEEP -->|yes| DOOR
+        DEEP -->|no| ONE
+    end
+
+    subgraph THINGS["Things in the room"]
+        direction TB
+        BG["Empty-room background<br/>median along each surface's stripes"]
+        PROP["Proposals<br/>pixels far from the background"]
+        SOL["Round solids · tip/revolve.py<br/>GrabCut → symmetry axis →<br/>rim ellipses beat flat edges → lathe"]
+        REL["Wall boxes · tip/relief.py<br/>box vs. flat silhouette fit"]
+        TUBE["Ceiling pipes · tip/relief.py<br/>wedges through the VP in polar space"]
+        OBJ["Furniture boxes · find_room_objects<br/>edges square to the room"]
+        SAM["Standing cutouts · tip/cutouts.py<br/>SAM proposes → room geometry decides<br/>→ SAM regrows whole figure"]
+        BG --> PROP
+        PROP --> SOL
+        PROP --> REL
+        PROP --> TUBE
+    end
+
+    ANN[("Annotation JSON<br/>data/annotations/&lt;scene&gt;.json")]
+    EDIT["Editor · scripts/annotate.py<br/>adjust by hand (optional)"]
+
+    subgraph BUILD["Scene build · scripts/build_scene.py"]
+        direction TB
+        GEO["3D planes, boxes, lathes,<br/>cylinders, billboards"]
+        TEX["Inverse-mapped textures<br/>per plane, front-on"]
+        HOLE["Holes (alpha = 0)<br/>off-image · occluded · behind objects"]
+        FILL["Push-pull fill baseline"]
+        GEO --> TEX --> HOLE --> FILL
+    end
+
+    SCN[("scenes/&lt;scene&gt;/scene.json + textures")]
+    VIEW["three.js viewer<br/>walk into the picture"]
+    RAY["NumPy ray-caster<br/>novel views, GIFs, tests"]
+    SITE["Gallery site<br/>scripts/serve.py"]
+
+    IMG --> VP
+    IMG --> SAM
+    DOOR --> BG
+    ONE --> BG
+    DOOR -.->|"seams, floor depth"| SAM
+    ONE -.-> SAM
+    SOL -.->|"avoid / replace"| SAM
+    DOOR --> OBJ
+    ONE --> OBJ
+    OBJ --> ANN
+    SOL --> ANN
+    REL --> ANN
+    TUBE --> ANN
+    SAM --> ANN
+    DOOR --> ANN
+    ONE --> ANN
+    EDIT <--> ANN
+    ANN --> GEO
+    IMG --> TEX
+    FILL --> SCN
+    SCN --> VIEW
+    SCN --> RAY
+    VIEW --> SITE
+    RAY --> SITE
+```
+
 1. **Camera.** Pinhole camera at the origin with the vanishing point as the principal point (the classic TIP assumption), so the room's depth axis is the optical axis. Focal length comes from `focal_35mm` (26 mm unless measured, see below).
    - **Finding the vanishing point.** There are up to three candidates. One is a vote by strong edge pixels. Another is a vote by straight line segments (OpenCV's LSD) weighted by length, so a painting's brush strokes, cracks and carpet patterns count for little. The third is the painter's **distance-point construction** run backwards: square tiles laid at 45° have edges converging to two points on the horizon at VP ∓ f. Each tile family alone is a bundle of nearly parallel lines whose meeting point is poorly pinned. So (vx, vy, f) is fitted jointly: the two distance points plus the room's own receding lines at the VP, with segments weighted by length squared (short tile edges near the horizon have biased directions). This also *measures* the focal length instead of assuming one. On a synthetic room with diagonal tiles and a 35 mm lens it recovers the VP to within 1 px and f to within 2%. On Vermeer's *The Music Lesson* it puts the VP on the lady's sleeve, where Vermeer's pinhole has been found, with f ≈ 39 mm. Candidates that explain less than half the long-line evidence of the best one are dropped. Each remaining one is refined jointly with the back wall, without drifting off what the lines say, and the best back-wall fit wins.
 2. **Boxes.**
